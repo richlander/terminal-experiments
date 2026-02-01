@@ -53,6 +53,19 @@ public class TabView : IInteractiveComponent
     public bool IsFocused { get; set; }
 
     /// <summary>
+    /// Gets or sets whether Left/Right arrows automatically switch tabs.
+    /// Set to false to handle tab switching manually via the OnKey callback.
+    /// </summary>
+    public bool AutoSwitchTabs { get; set; } = true;
+
+    /// <summary>
+    /// Optional callback invoked before key handling. Return true to indicate
+    /// the key was handled and stop further processing. Use this for view-specific
+    /// key bindings (e.g., S for sort, R for refresh).
+    /// </summary>
+    public Func<ConsoleKeyInfo, bool>? OnKey { get; set; }
+
+    /// <summary>
     /// Adds a tab with the specified title and content.
     /// </summary>
     /// <param name="title">The tab title.</param>
@@ -76,30 +89,43 @@ public class TabView : IInteractiveComponent
     /// <inheritdoc />
     public bool HandleKey(ConsoleKeyInfo key)
     {
-        switch (key.Key)
+        // First, give the OnKey callback a chance to handle view-specific keys
+        if (OnKey?.Invoke(key) == true)
         {
-            case ConsoleKey.LeftArrow:
-                if (_selectedIndex > 0)
-                {
-                    _selectedIndex--;
-                    return true;
-                }
-                break;
-
-            case ConsoleKey.RightArrow:
-                if (_selectedIndex < _tabs.Count - 1)
-                {
-                    _selectedIndex++;
-                    return true;
-                }
-                break;
+            return true;
         }
 
-        // Delegate to active tab content if interactive
+        // Then delegate to active tab content - it gets priority over tab switching
         if (_tabs.Count > 0 && _selectedIndex < _tabs.Count &&
             _tabs[_selectedIndex].Content is IInteractiveComponent interactive)
         {
-            return interactive.HandleKey(key);
+            if (interactive.HandleKey(key))
+            {
+                return true;
+            }
+        }
+
+        // Finally, handle tab switching if enabled and content didn't consume the key
+        if (AutoSwitchTabs)
+        {
+            switch (key.Key)
+            {
+                case ConsoleKey.LeftArrow:
+                    if (_selectedIndex > 0)
+                    {
+                        _selectedIndex--;
+                        return true;
+                    }
+                    break;
+
+                case ConsoleKey.RightArrow:
+                    if (_selectedIndex < _tabs.Count - 1)
+                    {
+                        _selectedIndex++;
+                        return true;
+                    }
+                    break;
+            }
         }
 
         return false;

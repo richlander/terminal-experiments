@@ -26,6 +26,19 @@ public class ViewStack : IInteractiveComponent
     public bool IsFocused { get; set; }
 
     /// <summary>
+    /// Gets or sets whether Escape/Backspace automatically pops the stack.
+    /// Set to false to handle navigation manually via the OnKey callback.
+    /// </summary>
+    public bool AutoNavigateBack { get; set; } = true;
+
+    /// <summary>
+    /// Optional callback invoked before key handling. Return true to indicate
+    /// the key was handled and stop further processing. Use this for view-specific
+    /// key bindings (e.g., S for sort, R for refresh).
+    /// </summary>
+    public Func<ConsoleKeyInfo, bool>? OnKey { get; set; }
+
+    /// <summary>
     /// Push a new view onto the stack.
     /// </summary>
     /// <param name="view">The view to push.</param>
@@ -94,16 +107,25 @@ public class ViewStack : IInteractiveComponent
     /// <inheritdoc />
     public bool HandleKey(ConsoleKeyInfo key)
     {
-        // Escape/Backspace pops the stack (but not if at root)
-        if (key.Key is ConsoleKey.Escape or ConsoleKey.Backspace && _views.Count > 1)
+        // First, give the OnKey callback a chance to handle view-specific keys
+        if (OnKey?.Invoke(key) == true)
         {
-            return Pop();
+            return true;
         }
 
-        // Delegate to current view if interactive
+        // Then delegate to current view - it gets priority over navigation
         if (Current is IInteractiveComponent interactive)
         {
-            return interactive.HandleKey(key);
+            if (interactive.HandleKey(key))
+            {
+                return true;
+            }
+        }
+
+        // Finally, handle navigation keys if enabled and view didn't consume them
+        if (AutoNavigateBack && key.Key is ConsoleKey.Escape or ConsoleKey.Backspace && _views.Count > 1)
+        {
+            return Pop();
         }
 
         return false;
