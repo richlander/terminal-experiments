@@ -17,6 +17,24 @@ public sealed class TerminalApp
     private bool _needsRender = true;
 
     /// <summary>
+    /// Keys that should be deduplicated per frame to prevent key-repeat issues.
+    /// Navigation keys held down will only register once per frame.
+    /// </summary>
+    public HashSet<ConsoleKey> DeduplicatedKeys { get; } = new()
+    {
+        ConsoleKey.UpArrow,
+        ConsoleKey.DownArrow,
+        ConsoleKey.LeftArrow,
+        ConsoleKey.RightArrow,
+        ConsoleKey.PageUp,
+        ConsoleKey.PageDown,
+        ConsoleKey.Home,
+        ConsoleKey.End,
+        ConsoleKey.J,
+        ConsoleKey.K
+    };
+
+    /// <summary>
     /// Initializes a new instance of the <see cref="TerminalApp"/> class.
     /// </summary>
     /// <param name="terminal">The terminal to render to.</param>
@@ -36,6 +54,11 @@ public sealed class TerminalApp
     /// Gets the terminal.
     /// </summary>
     public ITerminal Terminal => _terminal;
+
+    /// <summary>
+    /// Gets the screen buffer.
+    /// </summary>
+    public ScreenBuffer Buffer => _buffer;
 
     /// <summary>
     /// Registers a component as focusable for keyboard navigation.
@@ -114,11 +137,17 @@ public sealed class TerminalApp
                     _needsRender = true;
                 }
 
-                // Process input
+                // Collect all pending keys
+                var pendingKeys = new List<ConsoleKeyInfo>();
                 while (Console.KeyAvailable)
                 {
-                    var key = Console.ReadKey(intercept: true);
-                    if (HandleKey(key))
+                    pendingKeys.Add(Console.ReadKey(intercept: true));
+                }
+
+                // Process keys with deduplication
+                if (pendingKeys.Count > 0)
+                {
+                    if (ProcessKeys(pendingKeys))
                     {
                         _needsRender = true;
                     }
@@ -143,6 +172,39 @@ public sealed class TerminalApp
         {
             _terminal.ShowCursor();
         }
+    }
+
+    /// <summary>
+    /// Processes a batch of keys with deduplication for navigation keys.
+    /// </summary>
+    /// <param name="keys">The keys to process.</param>
+    /// <returns>True if any key was handled.</returns>
+    private bool ProcessKeys(List<ConsoleKeyInfo> keys)
+    {
+        var processedNavigationKeys = new HashSet<ConsoleKey>();
+        bool anyHandled = false;
+
+        foreach (var key in keys)
+        {
+            bool isDeduplicatedKey = DeduplicatedKeys.Contains(key.Key);
+
+            if (isDeduplicatedKey)
+            {
+                if (processedNavigationKeys.Contains(key.Key))
+                {
+                    continue;
+                }
+
+                processedNavigationKeys.Add(key.Key);
+            }
+
+            if (HandleKey(key))
+            {
+                anyHandled = true;
+            }
+        }
+
+        return anyHandled;
     }
 
     /// <summary>

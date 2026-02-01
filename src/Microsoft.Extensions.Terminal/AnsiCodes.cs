@@ -127,6 +127,20 @@ public static class AnsiCodes
     /// </remarks>
     public const string RemoveBusySpinner = $"{Esc}]9;4;0;{Esc}\\";
 
+    /// <summary>
+    /// Clears the entire screen.
+    /// </summary>
+    public const string ClearScreen = $"{CSI}2J";
+
+    /// <summary>
+    /// Moves cursor to home position (1,1).
+    /// </summary>
+    public const string MoveCursorHome = $"{CSI}H";
+
+    /// <summary>
+    /// Clears screen and moves cursor to home - common combination for full screen refresh.
+    /// </summary>
+    public const string ClearScreenAndHome = $"{CSI}2J{CSI}H";
     public static string Colorize(string? s, TerminalColor color)
         => string.IsNullOrWhiteSpace(s) ? s ?? string.Empty : $"{CSI}{(int)color}{SetColor}{s}{SetDefaultColor}";
 

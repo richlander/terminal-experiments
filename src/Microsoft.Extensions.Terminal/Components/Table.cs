@@ -97,6 +97,50 @@ public sealed class Table : IInteractiveComponent
     }
 
     /// <summary>
+    /// Bind the table to a data source with a row mapper.
+    /// Clears existing rows and repopulates from the items.
+    /// </summary>
+    /// <typeparam name="T">The type of items in the data source.</typeparam>
+    /// <param name="items">The items to bind.</param>
+    /// <param name="rowMapper">A function that maps an item and its index to a TableRow.</param>
+    public void Bind<T>(IReadOnlyList<T> items, Func<T, int, TableRow> rowMapper)
+    {
+        int previousSelection = _selectedIndex;
+        Clear();
+
+        for (int i = 0; i < items.Count; i++)
+        {
+            _rows.Add(rowMapper(items[i], i));
+        }
+
+        // Restore selection if possible
+        if (previousSelection >= 0 && previousSelection < _rows.Count)
+        {
+            _selectedIndex = previousSelection;
+        }
+        else if (_rows.Count > 0 && IsSelectable)
+        {
+            _selectedIndex = Math.Min(previousSelection, _rows.Count - 1);
+            if (_selectedIndex < 0)
+            {
+                _selectedIndex = 0;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Bind the table to a data source with a cell array mapper.
+    /// Clears existing rows and repopulates from the items.
+    /// </summary>
+    /// <typeparam name="T">The type of items in the data source.</typeparam>
+    /// <param name="items">The items to bind.</param>
+    /// <param name="cellMapper">A function that maps an item to an array of TableCells.</param>
+    public void Bind<T>(IReadOnlyList<T> items, Func<T, TableCell[]> cellMapper)
+    {
+        Bind(items, (item, _) => new TableRow(cellMapper(item)));
+    }
+
+    /// <summary>
     /// Clears all rows.
     /// </summary>
     public void Clear()
