@@ -21,6 +21,7 @@ internal static class AttachCommand
 
         string sessionId = args[0];
         string uri = "pipe://termalive";
+        string? logFile = null;
 
         for (int i = 1; i < args.Length; i++)
         {
@@ -30,6 +31,12 @@ internal static class AttachCommand
                     if (i + 1 < args.Length)
                     {
                         uri = args[++i];
+                    }
+                    break;
+                case "--log" or "-l":
+                    if (i + 1 < args.Length)
+                    {
+                        logFile = args[++i];
                     }
                     break;
                 case "--help" or "-h":
@@ -43,137 +50,170 @@ internal static class AttachCommand
         await using var client = await SessionClient.ConnectAsync(uri);
         await using var attachment = await client.AttachAsync(sessionId);
 
-        Console.WriteLine($"Attached to session: {attachment.SessionInfo.Id}");
-        Console.WriteLine($"Press Ctrl+B, D to detach.");
-        Console.WriteLine();
-
-        // Write buffered output
-        if (attachment.BufferedOutput.Length > 0)
+        // Open log file if specified
+        FileStream? logStream = null;
+        if (logFile != null)
         {
-            Console.Write(Encoding.UTF8.GetString(attachment.BufferedOutput.Span));
+            logStream = new FileStream(logFile, FileMode.Create, FileAccess.Write, FileShare.Read);
         }
-
-        // Set terminal to raw mode
-        var originalMode = Console.TreatControlCAsInput;
-        Console.TreatControlCAsInput = true;
 
         try
         {
-            // Resize to match terminal
+            Console.WriteLine($"Attached to session: {attachment.SessionInfo.Id}");
+            Console.WriteLine($"Press Ctrl+B, D to detach.");
+            if (logFile != null)
+            {
+                Console.WriteLine($"Logging to: {logFile}");
+            }
+            Console.WriteLine();
+
+            // Write buffered output
+            if (attachment.BufferedOutput.Length > 0)
+            {
+                using var stdout = Console.OpenStandardOutput();
+                await stdout.WriteAsync(attachment.BufferedOutput);
+                await stdout.FlushAsync();
+
+                // Also log buffered output
+                if (logStream != null)
+                {
+                    await logStream.WriteAsync(attachment.BufferedOutput);
+                }
+            }
+
+            // Resize to match terminal before entering raw mode
             await attachment.ResizeAsync(Console.WindowWidth, Console.WindowHeight);
 
-            using var cts = new CancellationTokenSource();
+            // Enter raw terminal mode for proper PTY passthrough
+            if (!RawTerminal.EnterRawMode())
+            {
+                Console.Error.WriteLine("Warning: Could not enter raw mode. Some features may not work correctly.");
+            }
 
-            // Start tasks for input and output
-            var inputTask = ReadInputAsync(attachment, cts.Token);
-            var outputTask = WriteOutputAsync(attachment, cts.Token);
+            try
+            {
+                using var cts = new CancellationTokenSource();
 
-            // Wait for either to complete (detach or session exit)
-            await Task.WhenAny(inputTask, outputTask);
-            await cts.CancelAsync();
+                // Start tasks for input and output
+                var inputTask = Task.Run(() => ReadInputLoop(attachment, cts));
+                var outputTask = WriteOutputAsync(attachment, logStream, cts.Token);
 
-            // Wait for both to finish
-            try { await inputTask; } catch (OperationCanceledException) { }
-            try { await outputTask; } catch (OperationCanceledException) { }
+                // Wait for either to complete (detach or session exit)
+                await Task.WhenAny(inputTask, outputTask);
+                await cts.CancelAsync();
+
+                // Wait for both to finish
+                try { await inputTask; } catch (OperationCanceledException) { }
+                try { await outputTask; } catch (OperationCanceledException) { }
+            }
+            finally
+            {
+                RawTerminal.RestoreMode();
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("Detached.");
         }
         finally
         {
-            Console.TreatControlCAsInput = originalMode;
+            if (logStream != null)
+            {
+                await logStream.FlushAsync();
+                await logStream.DisposeAsync();
+            }
         }
-
-        Console.WriteLine();
-        Console.WriteLine("Detached.");
 
         return 0;
     }
 
-    private static async Task ReadInputAsync(ISessionAttachment attachment, CancellationToken cancellationToken)
+    private static void ReadInputLoop(ISessionAttachment attachment, CancellationTokenSource cts)
     {
-        var buffer = new byte[1];
+        // Use blocking reads on a thread - more reliable with raw mode
+        using var stdin = Console.OpenStandardInput();
+        var buffer = new byte[256];
         bool ctrlB = false;
 
-        while (!cancellationToken.IsCancellationRequested)
+        while (!cts.Token.IsCancellationRequested)
         {
-            if (!Console.KeyAvailable)
+            int bytesRead;
+            try
             {
-                await Task.Delay(10, cancellationToken);
+                bytesRead = stdin.Read(buffer, 0, buffer.Length);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (bytesRead <= 0)
+            {
                 continue;
             }
 
-            var key = Console.ReadKey(intercept: true);
-
-            // Check for detach sequence: Ctrl+B, D
-            if (ctrlB)
+            // Process input byte by byte for detach detection
+            int sendStart = 0;
+            for (int i = 0; i < bytesRead; i++)
             {
-                ctrlB = false;
-                if (key.Key == ConsoleKey.D)
+                var b = buffer[i];
+
+                if (ctrlB)
                 {
-                    // Detach
-                    await attachment.DetachAsync(cancellationToken);
-                    return;
+                    ctrlB = false;
+                    if (b == 'd' || b == 'D')
+                    {
+                        // Detach - send any pending bytes first
+                        if (sendStart < i - 1)
+                        {
+                            attachment.SendInputAsync(buffer.AsMemory(sendStart, i - 1 - sendStart), cts.Token).AsTask().Wait();
+                        }
+                        attachment.DetachAsync(cts.Token).AsTask().Wait();
+                        cts.Cancel();
+                        return;
+                    }
+                    else
+                    {
+                        // Send Ctrl+B that we were holding, then continue
+                        attachment.SendInputAsync(new byte[] { 0x02 }, cts.Token).AsTask().Wait();
+                        // Current byte will be sent with the batch
+                    }
+                    continue;
                 }
-                else
+
+                if (b == 0x02) // Ctrl+B
                 {
-                    // Send Ctrl+B followed by this key
-                    await attachment.SendInputAsync(new byte[] { 0x02 }, cancellationToken);
+                    // Send any pending bytes before the Ctrl+B
+                    if (sendStart < i)
+                    {
+                        attachment.SendInputAsync(buffer.AsMemory(sendStart, i - sendStart), cts.Token).AsTask().Wait();
+                    }
+                    ctrlB = true;
+                    sendStart = i + 1;
+                    continue;
                 }
             }
 
-            if (key.Key == ConsoleKey.B && key.Modifiers == ConsoleModifiers.Control)
+            // Send remaining bytes
+            if (sendStart < bytesRead && !ctrlB)
             {
-                ctrlB = true;
-                continue;
-            }
-
-            // Convert key to bytes
-            byte[] bytes;
-            if (key.KeyChar != '\0')
-            {
-                bytes = Encoding.UTF8.GetBytes(new[] { key.KeyChar });
-            }
-            else
-            {
-                // Handle special keys
-                bytes = key.Key switch
-                {
-                    ConsoleKey.UpArrow => "\x1b[A"u8.ToArray(),
-                    ConsoleKey.DownArrow => "\x1b[B"u8.ToArray(),
-                    ConsoleKey.RightArrow => "\x1b[C"u8.ToArray(),
-                    ConsoleKey.LeftArrow => "\x1b[D"u8.ToArray(),
-                    ConsoleKey.Home => "\x1b[H"u8.ToArray(),
-                    ConsoleKey.End => "\x1b[F"u8.ToArray(),
-                    ConsoleKey.Insert => "\x1b[2~"u8.ToArray(),
-                    ConsoleKey.Delete => "\x1b[3~"u8.ToArray(),
-                    ConsoleKey.PageUp => "\x1b[5~"u8.ToArray(),
-                    ConsoleKey.PageDown => "\x1b[6~"u8.ToArray(),
-                    ConsoleKey.F1 => "\x1bOP"u8.ToArray(),
-                    ConsoleKey.F2 => "\x1bOQ"u8.ToArray(),
-                    ConsoleKey.F3 => "\x1bOR"u8.ToArray(),
-                    ConsoleKey.F4 => "\x1bOS"u8.ToArray(),
-                    ConsoleKey.F5 => "\x1b[15~"u8.ToArray(),
-                    ConsoleKey.F6 => "\x1b[17~"u8.ToArray(),
-                    ConsoleKey.F7 => "\x1b[18~"u8.ToArray(),
-                    ConsoleKey.F8 => "\x1b[19~"u8.ToArray(),
-                    ConsoleKey.F9 => "\x1b[20~"u8.ToArray(),
-                    ConsoleKey.F10 => "\x1b[21~"u8.ToArray(),
-                    ConsoleKey.F11 => "\x1b[23~"u8.ToArray(),
-                    ConsoleKey.F12 => "\x1b[24~"u8.ToArray(),
-                    _ => []
-                };
-            }
-
-            if (bytes.Length > 0)
-            {
-                await attachment.SendInputAsync(bytes, cancellationToken);
+                attachment.SendInputAsync(buffer.AsMemory(sendStart, bytesRead - sendStart), cts.Token).AsTask().Wait();
             }
         }
     }
 
-    private static async Task WriteOutputAsync(ISessionAttachment attachment, CancellationToken cancellationToken)
+    private static async Task WriteOutputAsync(ISessionAttachment attachment, FileStream? logStream, CancellationToken cancellationToken)
     {
+        using var stdout = Console.OpenStandardOutput();
+
         await foreach (var data in attachment.ReadOutputAsync(cancellationToken))
         {
-            Console.Write(Encoding.UTF8.GetString(data.Span));
+            await stdout.WriteAsync(data, cancellationToken);
+            await stdout.FlushAsync(cancellationToken);
+
+            // Also write to log file if specified
+            if (logStream != null)
+            {
+                await logStream.WriteAsync(data, cancellationToken);
+            }
         }
     }
 
@@ -189,6 +229,7 @@ internal static class AttachCommand
 
             Options:
               -u, --uri <uri>      Host URI (default: pipe://termalive)
+              -l, --log <file>     Log all terminal output to file (raw bytes)
               -h, --help           Show this help message
 
             Keybindings:
@@ -196,7 +237,7 @@ internal static class AttachCommand
 
             Examples:
               termalive attach my-session
-              termalive a dev
+              termalive attach dev --log /tmp/session.log
               termalive attach remote --uri ws://server:7777
             """);
     }

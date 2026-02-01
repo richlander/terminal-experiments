@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+using System.Reflection;
 using Microsoft.Extensions.Terminal.Multiplexing;
 
 namespace Termalive;
@@ -10,7 +11,8 @@ namespace Termalive;
 /// </summary>
 public static class Program
 {
-    private const string Version = "1.0.0";
+    private static string Version => Assembly.GetExecutingAssembly()
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
 
     public static async Task<int> Main(string[] args)
     {
@@ -27,6 +29,8 @@ public static class Program
             return command switch
             {
                 "start" => await StartCommand.RunAsync(args[1..]),
+                "status" => await StatusCommand.RunAsync(args[1..]),
+                "stop" => await StopCommand.RunAsync(args[1..]),
                 "new" => await NewCommand.RunAsync(args[1..]),
                 "list" or "ls" => await ListCommand.RunAsync(args[1..]),
                 "attach" or "a" => await AttachCommand.RunAsync(args[1..]),
@@ -54,6 +58,8 @@ public static class Program
 
             Commands:
               start              Start the session host daemon
+              status             Show daemon status
+              stop               Stop the daemon
               new <id>           Create a new session
               list, ls           List active sessions
               attach, a <id>     Attach to a session (interactive)
@@ -64,13 +70,13 @@ public static class Program
               version            Show version information
 
             Examples:
-              termalive start --port 7777
+              termalive start -d             # Start daemon (background)
+              termalive status               # Check if running
               termalive new my-session --command bash
               termalive list
               termalive attach my-session
               termalive logs worker --follow --wait-idle 5s
-              termalive send my-session "echo hello"
-              termalive kill my-session
+              termalive stop                 # Stop daemon
 
             Run 'termalive <command> --help' for more information on a command.
             """);

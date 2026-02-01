@@ -17,14 +17,17 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>termalive</ToolCommandName>
     <PackageId>termalive</PackageId>
+    <Version>0.7.0</Version>
     <Description>Terminal session multiplexer - host, manage, and remotely attach to terminal sessions</Description>
     <Authors>Microsoft</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <PackageTags>terminal;console;multiplexer;session;pty;remote</PackageTags>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
 
   <ItemGroup>
     <ProjectReference Include="..\Microsoft.Extensions.Terminal.Multiplexing\Microsoft.Extensions.Terminal.Multiplexing.csproj" />
+    <None Include="README.md" Pack="true" PackagePath="\" />
   </ItemGroup>
 
 </Project>

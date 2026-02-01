@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+using System.Text;
 using Microsoft.Extensions.Terminal.Multiplexing;
 
 namespace Termalive;
@@ -23,6 +24,9 @@ internal static class NewCommand
         string? workingDirectory = null;
         string uri = "pipe://termalive";
         TimeSpan? idleTimeout = null;
+        bool detach = false;
+        string? logFile = null;
+        string? termOverride = null;
         var environment = new Dictionary<string, string>();
 
         for (int i = 1; i < args.Length; i++)
@@ -35,10 +39,25 @@ internal static class NewCommand
                         command = args[++i];
                     }
                     break;
-                case "--cwd" or "-d":
+                case "--cwd":
                     if (i + 1 < args.Length)
                     {
                         workingDirectory = args[++i];
+                    }
+                    break;
+                case "-d" or "--detach":
+                    detach = true;
+                    break;
+                case "--log" or "-l":
+                    if (i + 1 < args.Length)
+                    {
+                        logFile = args[++i];
+                    }
+                    break;
+                case "--term":
+                    if (i + 1 < args.Length)
+                    {
+                        termOverride = args[++i];
                     }
                     break;
                 case "--env" or "-e":
@@ -73,27 +92,200 @@ internal static class NewCommand
         // Default to user's shell
         command ??= Environment.GetEnvironmentVariable("SHELL") ?? "/bin/sh";
 
+        // Ensure TERM is set - use xterm-256color as safe default
+        // Many exotic terminals (ghostty, kitty, alacritty) set custom TERM values
+        // that may not be in the terminfo database on remote/container systems
+        if (!environment.ContainsKey("TERM"))
+        {
+            if (termOverride != null)
+            {
+                // Explicit override
+                environment["TERM"] = termOverride;
+            }
+            else
+            {
+                var parentTerm = Environment.GetEnvironmentVariable("TERM");
+
+                // Use parent TERM only if it's a common/safe value
+                var safeTerm = parentTerm switch
+                {
+                    "xterm" or "xterm-256color" or "xterm-color" => parentTerm,
+                    "screen" or "screen-256color" => parentTerm,
+                    "tmux" or "tmux-256color" => parentTerm,
+                    "linux" or "vt100" or "vt220" => parentTerm,
+                    _ => "xterm-256color" // Safe fallback for exotic terminals
+                };
+
+                environment["TERM"] = safeTerm;
+            }
+        }
+
         var options = new PtyOptions
         {
             Command = command,
             WorkingDirectory = workingDirectory ?? Environment.CurrentDirectory,
-            Environment = environment.Count > 0 ? environment : null,
+            Environment = environment,
             Columns = Console.WindowWidth,
             Rows = Console.WindowHeight,
             IdleTimeout = idleTimeout
         };
 
-        Console.WriteLine($"Connecting to {uri}...");
-
         await using var client = await SessionClient.ConnectAsync(uri);
         var session = await client.CreateSessionAsync(sessionId, options);
 
-        Console.WriteLine($"Created session: {session.Id}");
-        Console.WriteLine($"  Command: {session.Command}");
-        Console.WriteLine($"  Working Directory: {session.WorkingDirectory}");
-        Console.WriteLine($"  Size: {session.Columns}x{session.Rows}");
+        if (detach)
+        {
+            // Just print session info and exit
+            Console.WriteLine($"Created session: {session.Id}");
+            Console.WriteLine($"  Command: {session.Command}");
+            Console.WriteLine($"  Working Directory: {session.WorkingDirectory}");
+            Console.WriteLine($"  Size: {session.Columns}x{session.Rows}");
+            return 0;
+        }
+
+        // Auto-attach to the new session (like tmux)
+        await using var attachment = await client.AttachAsync(sessionId);
+
+        // Open log file if specified
+        FileStream? logStream = null;
+        if (logFile != null)
+        {
+            logStream = new FileStream(logFile, FileMode.Create, FileAccess.Write, FileShare.Read);
+            Console.Error.WriteLine($"Logging to: {logFile}");
+        }
+
+        try
+        {
+            // Show session banner before attaching
+            Console.WriteLine($"\x1b[90m── termalive: {session.Id} ──\x1b[0m");
+            Console.WriteLine($"\x1b[90mPress Ctrl+B, D to detach\x1b[0m");
+            if (logFile != null)
+            {
+                Console.WriteLine($"\x1b[90mLogging to: {logFile}\x1b[0m");
+            }
+            Console.WriteLine();
+
+            // Resize to match terminal before entering raw mode
+            await attachment.ResizeAsync(Console.WindowWidth, Console.WindowHeight);
+
+            // Enter raw terminal mode
+            if (!RawTerminal.EnterRawMode())
+            {
+                Console.Error.WriteLine("Warning: Could not enter raw mode.");
+            }
+
+            try
+            {
+                using var cts = new CancellationTokenSource();
+
+                var inputTask = Task.Run(() => ReadInputLoop(attachment, cts));
+                var outputTask = WriteOutputAsync(attachment, logStream, cts.Token);
+
+                await Task.WhenAny(inputTask, outputTask);
+                await cts.CancelAsync();
+
+                try { await inputTask; } catch (OperationCanceledException) { }
+                try { await outputTask; } catch (OperationCanceledException) { }
+            }
+            finally
+            {
+                RawTerminal.RestoreMode();
+            }
+
+            Console.WriteLine();
+            Console.WriteLine("Detached.");
+        }
+        finally
+        {
+            if (logStream != null)
+            {
+                await logStream.FlushAsync();
+                await logStream.DisposeAsync();
+            }
+        }
 
         return 0;
+    }
+
+    private static void ReadInputLoop(ISessionAttachment attachment, CancellationTokenSource cts)
+    {
+        using var stdin = Console.OpenStandardInput();
+        var buffer = new byte[256];
+        bool ctrlB = false;
+
+        while (!cts.Token.IsCancellationRequested)
+        {
+            int bytesRead;
+            try
+            {
+                bytesRead = stdin.Read(buffer, 0, buffer.Length);
+            }
+            catch
+            {
+                return;
+            }
+
+            if (bytesRead <= 0) continue;
+
+            int sendStart = 0;
+            for (int i = 0; i < bytesRead; i++)
+            {
+                var b = buffer[i];
+
+                if (ctrlB)
+                {
+                    ctrlB = false;
+                    if (b == 'd' || b == 'D')
+                    {
+                        if (sendStart < i - 1)
+                        {
+                            attachment.SendInputAsync(buffer.AsMemory(sendStart, i - 1 - sendStart), cts.Token).AsTask().Wait();
+                        }
+                        attachment.DetachAsync(cts.Token).AsTask().Wait();
+                        cts.Cancel();
+                        return;
+                    }
+                    else
+                    {
+                        attachment.SendInputAsync(new byte[] { 0x02 }, cts.Token).AsTask().Wait();
+                    }
+                    continue;
+                }
+
+                if (b == 0x02)
+                {
+                    if (sendStart < i)
+                    {
+                        attachment.SendInputAsync(buffer.AsMemory(sendStart, i - sendStart), cts.Token).AsTask().Wait();
+                    }
+                    ctrlB = true;
+                    sendStart = i + 1;
+                    continue;
+                }
+            }
+
+            if (sendStart < bytesRead && !ctrlB)
+            {
+                attachment.SendInputAsync(buffer.AsMemory(sendStart, bytesRead - sendStart), cts.Token).AsTask().Wait();
+            }
+        }
+    }
+
+    private static async Task WriteOutputAsync(ISessionAttachment attachment, FileStream? logStream, CancellationToken cancellationToken)
+    {
+        using var stdout = Console.OpenStandardOutput();
+
+        await foreach (var data in attachment.ReadOutputAsync(cancellationToken))
+        {
+            await stdout.WriteAsync(data, cancellationToken);
+            await stdout.FlushAsync(cancellationToken);
+
+            // Also write to log file if specified
+            if (logStream != null)
+            {
+                await logStream.WriteAsync(data, cancellationToken);
+            }
+        }
     }
 
     private static TimeSpan? ParseTimeout(string value)
@@ -142,25 +334,27 @@ internal static class NewCommand
         Console.WriteLine("""
             Usage: termalive new <session-id> [options]
 
-            Create a new terminal session.
+            Create a new terminal session and attach to it.
 
             Arguments:
               <session-id>         Unique identifier for the session
 
             Options:
               -c, --command <cmd>  Command to run (default: $SHELL or /bin/sh)
-              -d, --cwd <dir>      Working directory (default: current directory)
+              -d, --detach         Create session without attaching
+              -l, --log <file>     Log all terminal output to file (raw bytes)
+              --term <value>       Set TERM (default: xterm-256color for exotic terminals)
+              --cwd <dir>          Working directory (default: current directory)
               -e, --env <K=V>      Set environment variable (can be repeated)
               -u, --uri <uri>      Host URI (default: pipe://termalive)
               -t, --idle-timeout   Terminate session after idle time (e.g., 10m, 1h, 30s)
               -h, --help           Show this help message
 
             Examples:
-              termalive new my-session
-              termalive new dev --command "bash" --cwd ~/projects
-              termalive new work --env "DEBUG=1" --env "NODE_ENV=development"
-              termalive new remote --uri ws://server:7777
-              termalive new summarizer --command "claude" --idle-timeout 10m
+              termalive new my-session                       # Create and attach
+              termalive new dev -d                           # Create detached
+              termalive new claude-test --command claude --log /tmp/claude.log
+              termalive new work --command "bash" --cwd ~/projects
             """);
     }
 }

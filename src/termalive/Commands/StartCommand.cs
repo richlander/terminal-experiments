@@ -14,6 +14,7 @@ internal static class StartCommand
     {
         int port = 7777;
         string? pipeName = "termalive";
+        bool detach = false;
 
         for (int i = 0; i < args.Length; i++)
         {
@@ -34,17 +35,30 @@ internal static class StartCommand
                 case "--no-pipe":
                     pipeName = null;
                     break;
+                case "-d" or "--detach":
+                    detach = true;
+                    break;
                 case "--help" or "-h":
                     PrintHelp();
                     return 0;
             }
         }
 
+        // If detach mode, spawn background process and exit
+        if (detach)
+        {
+            return DaemonManager.StartDetached(port, pipeName);
+        }
+
+        // Foreground mode - run the host directly
         var options = new SessionHostOptions
         {
             WebSocketPort = port,
             PipeName = pipeName
         };
+
+        // Write PID file so status/stop commands work
+        DaemonManager.WritePidFile(port);
 
         Console.WriteLine($"Starting termalive host...");
         Console.WriteLine($"  WebSocket: ws://localhost:{port}/");
@@ -76,6 +90,7 @@ internal static class StartCommand
         }
 
         await host.DisposeAsync();
+        DaemonManager.RemovePidFile();
         Console.WriteLine("Host stopped.");
 
         return 0;
@@ -89,15 +104,16 @@ internal static class StartCommand
             Start the session host daemon.
 
             Options:
+              -d, --detach         Run in background (like docker -d)
               -p, --port <port>    WebSocket port (default: 7777)
               --pipe <name>        Named pipe name (default: termalive)
               --no-pipe            Disable named pipe server
               -h, --help           Show this help message
 
             Examples:
-              termalive start
-              termalive start --port 8080
-              termalive start --no-pipe
+              termalive start              # Run in foreground
+              termalive start -d           # Run in background
+              termalive start -d -p 8080   # Background on port 8080
             """);
     }
 }

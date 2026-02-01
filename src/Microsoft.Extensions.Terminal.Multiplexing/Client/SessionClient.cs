@@ -37,27 +37,49 @@ public sealed class SessionClient : ISessionClient
     /// <returns>A connected session client.</returns>
     public static async Task<SessionClient> ConnectAsync(string uri, CancellationToken cancellationToken = default)
     {
+        return await ConnectAsync(uri, TimeSpan.FromSeconds(5), cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Connects to a session host with a specified timeout.
+    /// </summary>
+    /// <param name="uri">The URI of the session host (ws://host:port or pipe://pipename).</param>
+    /// <param name="timeout">Connection timeout.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>A connected session client.</returns>
+    public static async Task<SessionClient> ConnectAsync(string uri, TimeSpan timeout, CancellationToken cancellationToken = default)
+    {
         ArgumentException.ThrowIfNullOrWhiteSpace(uri);
+
+        using var timeoutCts = new CancellationTokenSource(timeout);
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
 
         Stream stream;
 
-        if (uri.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
-            uri.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+        try
         {
-            var ws = new ClientWebSocket();
-            await ws.ConnectAsync(new Uri(uri), cancellationToken).ConfigureAwait(false);
-            stream = new WebSocketStream(ws);
+            if (uri.StartsWith("ws://", StringComparison.OrdinalIgnoreCase) ||
+                uri.StartsWith("wss://", StringComparison.OrdinalIgnoreCase))
+            {
+                var ws = new ClientWebSocket();
+                await ws.ConnectAsync(new Uri(uri), linkedCts.Token).ConfigureAwait(false);
+                stream = new WebSocketStream(ws);
+            }
+            else if (uri.StartsWith("pipe://", StringComparison.OrdinalIgnoreCase))
+            {
+                var pipeName = uri[7..]; // Remove "pipe://"
+                var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
+                await pipe.ConnectAsync(linkedCts.Token).ConfigureAwait(false);
+                stream = pipe;
+            }
+            else
+            {
+                throw new ArgumentException($"Unsupported URI scheme: {uri}. Use ws:// or pipe://", nameof(uri));
+            }
         }
-        else if (uri.StartsWith("pipe://", StringComparison.OrdinalIgnoreCase))
+        catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested && !cancellationToken.IsCancellationRequested)
         {
-            var pipeName = uri[7..]; // Remove "pipe://"
-            var pipe = new NamedPipeClientStream(".", pipeName, PipeDirection.InOut, PipeOptions.Asynchronous);
-            await pipe.ConnectAsync(cancellationToken).ConfigureAwait(false);
-            stream = pipe;
-        }
-        else
-        {
-            throw new ArgumentException($"Unsupported URI scheme: {uri}. Use ws:// or pipe://", nameof(uri));
+            throw new TimeoutException($"Connection to '{uri}' timed out after {timeout.TotalSeconds:F0} seconds. Is the termalive host running?");
         }
 
         var reader = new ProtocolReader(stream);
