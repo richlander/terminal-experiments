@@ -60,19 +60,20 @@ public sealed class Panel : IComponent
             }
         }
 
-        // Render content in interior region
-        if (Content != null)
-        {
-            var interior = new Region(
-                region.X + 1,
-                region.Y + 1,
-                region.Width - 2,
-                region.Height - 2);
+        // Calculate interior region
+        var interior = new Region(
+            region.X + 1,
+            region.Y + 1,
+            region.Width - 2,
+            region.Height - 2);
 
-            if (interior.Width > 0 && interior.Height > 0)
-            {
-                Content.Render(buffer, interior);
-            }
+        if (interior.Width > 0 && interior.Height > 0)
+        {
+            // Clear interior region before rendering content
+            buffer.Clear(interior);
+
+            // Render content
+            Content?.Render(buffer, interior);
         }
     }
 

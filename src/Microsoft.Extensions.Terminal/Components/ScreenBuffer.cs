@@ -153,6 +153,15 @@ public sealed class ScreenBuffer
     }
 
     /// <summary>
+    /// Clear a region.
+    /// </summary>
+    /// <param name="region">The region to clear.</param>
+    public void Clear(Region region)
+    {
+        Clear(region.X, region.Y, region.Width, region.Height);
+    }
+
+    /// <summary>
     /// Flush only dirty cells to the terminal.
     /// </summary>
     /// <param name="terminal">The terminal to write to.</param>
