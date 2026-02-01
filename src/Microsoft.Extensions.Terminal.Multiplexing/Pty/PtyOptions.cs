@@ -37,4 +37,11 @@ public sealed class PtyOptions
     /// Gets or sets the initial number of rows. Default is 24.
     /// </summary>
     public int Rows { get; set; } = 24;
+
+    /// <summary>
+    /// Gets or sets the idle timeout for the session. If no input or output occurs
+    /// within this duration, the session will be automatically terminated.
+    /// Set to null (default) for no timeout.
+    /// </summary>
+    public TimeSpan? IdleTimeout { get; set; }
 }

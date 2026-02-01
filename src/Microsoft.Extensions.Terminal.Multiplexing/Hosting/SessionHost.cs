@@ -18,6 +18,7 @@ public sealed class SessionHost : IAsyncDisposable, IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly List<Task> _clientTasks = [];
     private readonly object _clientLock = new();
+    private readonly Timer _idleCheckTimer;
 
     private HttpListener? _httpListener;
     private NamedPipeServerStream? _pipeServer;
@@ -38,6 +39,9 @@ public sealed class SessionHost : IAsyncDisposable, IDisposable
     public SessionHost(SessionHostOptions options)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
+
+        // Start idle check timer (every 30 seconds)
+        _idleCheckTimer = new Timer(CheckIdleSessions, null, TimeSpan.FromSeconds(30), TimeSpan.FromSeconds(30));
     }
 
     /// <summary>
@@ -120,6 +124,30 @@ public sealed class SessionHost : IAsyncDisposable, IDisposable
         session.Kill(force);
         await session.DisposeAsync().ConfigureAwait(false);
         return true;
+    }
+
+    private void CheckIdleSessions(object? state)
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        // Find sessions that have exceeded their idle timeout
+        var idleSessions = _sessions.Values
+            .Where(s => s.IsIdleTimedOut)
+            .Select(s => s.Id)
+            .ToList();
+
+        // Kill idle sessions
+        foreach (var sessionId in idleSessions)
+        {
+            if (_sessions.TryRemove(sessionId, out var session))
+            {
+                session.Kill(force: false);
+                session.Dispose();
+            }
+        }
     }
 
     private async Task AcceptWebSocketClientsAsync(CancellationToken cancellationToken)
@@ -374,6 +402,7 @@ public sealed class SessionHost : IAsyncDisposable, IDisposable
 
         _disposed = true;
         _cts.Cancel();
+        _idleCheckTimer.Dispose();
 
         _httpListener?.Close();
         _pipeServer?.Dispose();
@@ -397,6 +426,7 @@ public sealed class SessionHost : IAsyncDisposable, IDisposable
 
         _disposed = true;
         await _cts.CancelAsync().ConfigureAwait(false);
+        await _idleCheckTimer.DisposeAsync().ConfigureAwait(false);
 
         _httpListener?.Close();
 

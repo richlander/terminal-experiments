@@ -23,12 +23,14 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
     private readonly object _lock = new();
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _readTask;
+    private readonly TimeSpan? _idleTimeout;
 
     private SessionState _state;
     private int? _exitCode;
     private int _columns;
     private int _rows;
     private bool _disposed;
+    private DateTimeOffset _lastActivityTime;
 
     /// <summary>
     /// Creates a new managed session.
@@ -47,7 +49,9 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
         _workingDirectory = options.WorkingDirectory;
         _columns = options.Columns;
         _rows = options.Rows;
+        _idleTimeout = options.IdleTimeout;
         _created = DateTimeOffset.UtcNow;
+        _lastActivityTime = _created;
         _state = SessionState.Starting;
         _outputBuffer = new CircularBuffer(bufferSize);
 
@@ -90,6 +94,24 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
         _rows);
 
     /// <summary>
+    /// Gets the idle timeout for this session, or null if no timeout is set.
+    /// </summary>
+    public TimeSpan? IdleTimeout => _idleTimeout;
+
+    /// <summary>
+    /// Gets the last activity time for this session.
+    /// </summary>
+    public DateTimeOffset LastActivityTime => _lastActivityTime;
+
+    /// <summary>
+    /// Gets whether this session has exceeded its idle timeout.
+    /// </summary>
+    public bool IsIdleTimedOut =>
+        _idleTimeout.HasValue &&
+        _state == SessionState.Running &&
+        DateTimeOffset.UtcNow - _lastActivityTime > _idleTimeout.Value;
+
+    /// <summary>
     /// Sends input to the session.
     /// </summary>
     /// <param name="data">The input data.</param>
@@ -103,6 +125,7 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
             throw new InvalidOperationException($"Cannot send input to session in state {_state}");
         }
 
+        _lastActivityTime = DateTimeOffset.UtcNow;
         await _pty.WriteAsync(data, cancellationToken).ConfigureAwait(false);
     }
 
@@ -214,6 +237,9 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
                 }
 
                 var data = buffer.AsMemory(0, bytesRead);
+
+                // Update activity time
+                _lastActivityTime = DateTimeOffset.UtcNow;
 
                 // Add to circular buffer
                 _outputBuffer.Write(data.Span);
