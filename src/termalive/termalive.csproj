@@ -1,0 +1,30 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>Termalive</RootNamespace>
+    <AssemblyName>termalive</AssemblyName>
+    
+    <!-- NativeAOT ready -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <IsTrimmable>true</IsTrimmable>
+    
+    <!-- .NET Tool configuration -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>termalive</ToolCommandName>
+    <PackageId>termalive</PackageId>
+    <Description>Terminal session multiplexer - host, manage, and remotely attach to terminal sessions</Description>
+    <Authors>Microsoft</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>terminal;console;multiplexer;session;pty;remote</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Microsoft.Extensions.Terminal.Multiplexing\Microsoft.Extensions.Terminal.Multiplexing.csproj" />
+  </ItemGroup>
+
+</Project>

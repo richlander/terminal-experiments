@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <IsTrimmable>true</IsTrimmable>
+    
+    <!-- Package metadata -->
+    <PackageId>Microsoft.Extensions.Terminal.Multiplexing</PackageId>
+    <Description>Session multiplexing and PTY management for Microsoft.Extensions.Terminal</Description>
+    <Authors>Microsoft</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>terminal;console;pty;session;multiplexing;conpty</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Microsoft.Extensions.Terminal\Microsoft.Extensions.Terminal.csproj" />
+    <InternalsVisibleTo Include="Microsoft.Extensions.Terminal.Multiplexing.Tests" />
+  </ItemGroup>
+
+</Project>
