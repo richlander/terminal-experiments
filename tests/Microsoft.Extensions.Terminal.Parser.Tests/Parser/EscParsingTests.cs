@@ -211,4 +211,114 @@ public class EscParsingTests : ParserTestBase
     }
 
     #endregion
+
+    #region ESC # Sequences (Double Width/Height)
+
+    /// <summary>
+    /// DECDWL - Double-Width Line
+    /// </summary>
+    [Fact]
+    public void Esc_Decdwl_DoubleWidthLine()
+    {
+        Parse($"{Esc}#6");
+
+        var esc = AssertSingleEsc('6');
+        Assert.Equal((byte)'#', esc.Intermediates);
+    }
+
+    /// <summary>
+    /// DECSWL - Single-Width Line
+    /// </summary>
+    [Fact]
+    public void Esc_Decswl_SingleWidthLine()
+    {
+        Parse($"{Esc}#5");
+
+        var esc = AssertSingleEsc('5');
+        Assert.Equal((byte)'#', esc.Intermediates);
+    }
+
+    /// <summary>
+    /// DECDHL - Double-Height Line (Top Half)
+    /// </summary>
+    [Fact]
+    public void Esc_Decdhl_TopHalf()
+    {
+        Parse($"{Esc}#3");
+
+        var esc = AssertSingleEsc('3');
+        Assert.Equal((byte)'#', esc.Intermediates);
+    }
+
+    /// <summary>
+    /// DECDHL - Double-Height Line (Bottom Half)
+    /// </summary>
+    [Fact]
+    public void Esc_Decdhl_BottomHalf()
+    {
+        Parse($"{Esc}#4");
+
+        var esc = AssertSingleEsc('4');
+        Assert.Equal((byte)'#', esc.Intermediates);
+    }
+
+    /// <summary>
+    /// DECALN - Screen Alignment Test (fills screen with 'E')
+    /// </summary>
+    [Fact]
+    public void Esc_Decaln_ScreenAlignment()
+    {
+        Parse($"{Esc}#8");
+
+        var esc = AssertSingleEsc('8');
+        Assert.Equal((byte)'#', esc.Intermediates);
+    }
+
+    #endregion
+
+    #region Save/Restore Cursor
+
+    /// <summary>
+    /// DECSC - Save Cursor (ESC 7)
+    /// </summary>
+    [Fact]
+    public void Esc_Decsc_SaveCursor()
+    {
+        Parse($"{Esc}7");
+
+        var esc = AssertSingleEsc('7');
+        Assert.Equal(0, esc.Intermediates);
+    }
+
+    /// <summary>
+    /// DECRC - Restore Cursor (ESC 8)
+    /// </summary>
+    [Fact]
+    public void Esc_Decrc_RestoreCursor()
+    {
+        Parse($"{Esc}8");
+
+        var esc = AssertSingleEsc('8');
+        Assert.Equal(0, esc.Intermediates);
+    }
+
+    /// <summary>
+    /// Save and restore in sequence
+    /// </summary>
+    [Fact]
+    public void Esc_SaveRestore_Sequence()
+    {
+        Parse($"{Esc}7ABC{Esc}8");
+
+        var escs = Events.OfType<EscEvent>().ToList();
+        Assert.Equal(2, escs.Count);
+        Assert.Equal('7', escs[0].Command);  // Save
+        Assert.Equal('8', escs[1].Command);  // Restore
+        
+        // Text should be in between
+        var prints = Events.OfType<PrintEvent>().ToList();
+        Assert.Equal(3, prints.Count);
+    }
+
+    #endregion
 }

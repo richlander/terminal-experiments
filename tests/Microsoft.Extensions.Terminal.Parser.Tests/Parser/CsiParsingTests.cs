@@ -621,4 +621,39 @@ public class CsiParsingTests : ParserTestBase
     }
 
     #endregion
+
+    #region REP - Repeat Preceding Character
+
+    /// <summary>
+    /// REP (CSI Ps b) - Repeat the preceding graphic character Ps times.
+    /// Ported from: libvterm t/31state_rep.test
+    /// </summary>
+    [Fact]
+    public void Rep_RepeatCharacter()
+    {
+        Parse($"{Esc}[5b");
+
+        var csi = AssertSingleCsi('b');
+        Assert.Equal([5], csi.Params);
+    }
+
+    [Fact]
+    public void Rep_DefaultCount()
+    {
+        Parse($"{Esc}[b");
+
+        var csi = AssertSingleCsi('b');
+        Assert.Empty(csi.Params);
+    }
+
+    [Fact]
+    public void Rep_LargeCount()
+    {
+        Parse($"{Esc}[1000b");
+
+        var csi = AssertSingleCsi('b');
+        Assert.Equal([1000], csi.Params);
+    }
+
+    #endregion
 }
