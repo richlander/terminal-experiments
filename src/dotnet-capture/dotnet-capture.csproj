@@ -1,0 +1,32 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>Exe</OutputType>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <RootNamespace>DotnetCapture</RootNamespace>
+    <AssemblyName>dotnet-capture</AssemblyName>
+    
+    <!-- NativeAOT ready -->
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <IsTrimmable>true</IsTrimmable>
+    
+    <!-- .NET Tool configuration -->
+    <PackAsTool>true</PackAsTool>
+    <ToolCommandName>dotnet-capture</ToolCommandName>
+    <PackageId>dotnet-capture</PackageId>
+    <Version>0.1.0</Version>
+    <Description>Capture terminal output from TUI apps, parse VT sequences, and extract screen content</Description>
+    <Authors>Microsoft</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>terminal;console;capture;pty;vt100;testing</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Microsoft.Extensions.Terminal.Parser\Microsoft.Extensions.Terminal.Parser.csproj" />
+    <ProjectReference Include="..\Microsoft.Extensions.Terminal.Multiplexing\Microsoft.Extensions.Terminal.Multiplexing.csproj" />
+  </ItemGroup>
+
+</Project>
