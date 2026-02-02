@@ -1,6 +1,7 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
+using System.Reflection;
 using Microsoft.Extensions.Terminal.Multiplexing;
 
 namespace Termalive;
@@ -18,6 +19,9 @@ namespace Termalive;
 /// </remarks>
 internal static class InlineCommand
 {
+    private static string Version => Assembly.GetExecutingAssembly()
+        .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?.InformationalVersion ?? "0.0.0";
+
     public static async Task<int> RunAsync(string[] args)
     {
         string? command = null;
@@ -139,9 +143,12 @@ internal static class InlineCommand
 
         try
         {
-            // Show inline indicator - no alternate screen buffer!
+            // Show welcome message and inline indicator - no alternate screen buffer!
             // This is the key difference from AttachCommand
-            Console.WriteLine($"[termalive: {sessionId}] (Ctrl+B, D to detach)");
+            Console.WriteLine($"termalive version {Version}");
+            Console.WriteLine("Welcome to termalive, your terminal session orchestrator; use `termalive help` to learn more");
+            Console.WriteLine();
+            Console.WriteLine($"[session: {sessionId}] (Ctrl+B, D to detach)");
 
             // Display any buffered output inline (no screen clearing)
             if (attachment.BufferedOutput.Length > 0)
