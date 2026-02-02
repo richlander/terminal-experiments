@@ -15,8 +15,10 @@ using Microsoft.Extensions.Terminal.Components;
 // - TerminalApp for the main render loop and keyboard handling
 // - Layout for arranging components (horizontal/vertical)
 // - Panel for bordered containers
+// - Rule for separator lines
 // - Text for styled content
 // - ScreenBuffer for efficient differential rendering
+// - IInteractiveComponent for keyboard handling
 // - Custom IComponent implementations for animation
 // ============================================================================
 
@@ -78,13 +80,30 @@ if (!useAnsi)
     return 1;
 }
 
-// Create terminal and app
-var console = new SystemConsole();
-var terminal = new AnsiTerminal(console);
+// Create terminal and run using TerminalApp
+var systemConsole = new SystemConsole();
+var terminal = new AnsiTerminal(systemConsole);
+var app = new TerminalApp(terminal);
 
-// Run the dashboard
-var dashboard = new Dashboard(terminal, message, staticMode, durationSeconds);
-return await dashboard.RunAsync();
+// Create the dashboard controller (handles keys and updates)
+var dashboard = new DashboardController(app, message, staticMode, durationSeconds);
+
+// Enter alternate screen
+Console.Write(AnsiCodes.EnterAlternateScreen);
+
+try
+{
+    // Run the app (TerminalApp handles render loop, resize, key dedup)
+    using var cts = new CancellationTokenSource();
+    Console.CancelKeyPress += (_, e) => { e.Cancel = true; cts.Cancel(); };
+    
+    await app.RunAsync(cts.Token);
+    return 0;
+}
+finally
+{
+    Console.Write(AnsiCodes.ExitAlternateScreen);
+}
 
 static void PrintHelp()
 {
@@ -107,6 +126,7 @@ static void PrintHelp()
 
         Controls:
           q, Escape   Quit
+          h           Toggle help
           Space       Pause/resume animation
           +/-         Adjust animation speed
           ←/→         Flip layout
@@ -114,44 +134,40 @@ static void PrintHelp()
 }
 
 // ============================================================================
-// Dashboard - Main application using Microsoft.Extensions.Terminal components
+// DashboardController - Manages state and registers with TerminalApp
 // ============================================================================
 
-sealed class Dashboard
+sealed class DashboardController : IInteractiveComponent
 {
-    private readonly ITerminal _terminal;
-    private readonly string _message;
+    private readonly TerminalApp _app;
     private readonly bool _staticMode;
     private readonly int? _durationSeconds;
-    private readonly Stopwatch _stopwatch = new();
+    private readonly Stopwatch _stopwatch = Stopwatch.StartNew();
 
     // Components
-    private ScreenBuffer _buffer = null!;
     private readonly MarqueeComponent _marquee;
     private readonly DotnetBotComponent _bot;
     private readonly InfoPanelComponent _infoPanel;
     private readonly FooterComponent _footer;
     private readonly SpacerComponent _spacer = new();
 
-    // Cached layouts (reused each frame to avoid allocations)
-    private readonly Layout _mainLayout;
+    // Cached layouts
     private readonly Layout _contentLayoutNormal;
     private readonly Layout _contentLayoutFlipped;
 
-    // Animation state
+    // State
     private bool _paused;
-    private int _tickDelayMs = 100;
     private bool _layoutFlipped;
-    private bool _showHelp = true; // Toggle with 'h' key
-
-    // Memory pressure for demo
+    private bool _showHelp = true;
     private readonly List<byte[]> _memoryPressure = new();
     private int _animationFrame;
+    private Timer? _animationTimer;
 
-    public Dashboard(ITerminal terminal, string message, bool staticMode, int? durationSeconds)
+    public bool IsFocused { get; set; } = true;
+
+    public DashboardController(TerminalApp app, string message, bool staticMode, int? durationSeconds)
     {
-        _terminal = terminal;
-        _message = message;
+        _app = app;
         _staticMode = staticMode;
         _durationSeconds = durationSeconds;
 
@@ -159,9 +175,10 @@ sealed class Dashboard
         _marquee = new MarqueeComponent(message);
         _bot = new DotnetBotComponent();
         _infoPanel = new InfoPanelComponent();
+        _infoPanel.CacheStaticInfo();
         _footer = new FooterComponent(_stopwatch);
 
-        // Pre-build layouts (reused each frame)
+        // Build content layouts
         _contentLayoutNormal = new Layout { Direction = LayoutDirection.Horizontal };
         _contentLayoutNormal.Add(_bot, LayoutSize.Fixed(28));
         _contentLayoutNormal.Add(_spacer, LayoutSize.Fixed(2));
@@ -172,130 +189,35 @@ sealed class Dashboard
         _contentLayoutFlipped.Add(_spacer, LayoutSize.Fixed(2));
         _contentLayoutFlipped.Add(_bot, LayoutSize.Fixed(28));
 
-        _mainLayout = new Layout { Direction = LayoutDirection.Vertical };
-    }
+        // Register with TerminalApp
+        app.RegisterFocusable(this);
 
-    public async Task<int> RunAsync()
-    {
-        // Cache static info once
-        _infoPanel.CacheStaticInfo();
+        // Set up the layout in TerminalApp
+        RebuildLayout();
 
-        // Enter alternate screen and hide cursor
-        Console.Write(AnsiCodes.EnterAlternateScreen);
-        _terminal.HideCursor();
-        Console.CancelKeyPress += OnCancelKeyPress;
+        // Start animation timer (triggers Invalidate on each tick)
+        _animationTimer = new Timer(OnAnimationTick, null, 0, 100);
 
-        try
+        // Handle duration limit
+        if (durationSeconds.HasValue)
         {
-            _buffer = new ScreenBuffer(_terminal.Width, _terminal.Height);
-            _stopwatch.Start();
-            await RenderLoopAsync();
-            return 0;
-        }
-        finally
-        {
-            // Restore terminal
-            _terminal.ShowCursor();
-            Console.Write(AnsiCodes.ExitAlternateScreen);
-            Console.CancelKeyPress -= OnCancelKeyPress;
+            _ = Task.Delay(TimeSpan.FromSeconds(durationSeconds.Value)).ContinueWith(_ => app.Stop());
         }
     }
 
-    private void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
+    private void OnAnimationTick(object? state)
     {
-        e.Cancel = true;
-        _stopwatch.Stop();
-    }
-
-    private async Task RenderLoopAsync()
-    {
-        while (_stopwatch.IsRunning)
+        if (!_paused && !_staticMode)
         {
-            if (_durationSeconds.HasValue && _stopwatch.Elapsed.TotalSeconds >= _durationSeconds.Value)
-            {
-                break;
-            }
-
-            // Check for terminal resize
-            if (_buffer.Width != _terminal.Width || _buffer.Height != _terminal.Height)
-            {
-                _buffer = new ScreenBuffer(_terminal.Width, _terminal.Height);
-                _buffer.Invalidate();
-            }
-
-            // Handle input
-            while (Console.KeyAvailable)
-            {
-                var key = Console.ReadKey(intercept: true);
-                if (!HandleKey(key))
-                {
-                    return;
-                }
-            }
-
-            // Update animations
-            if (!_paused && !_staticMode)
-            {
-                _animationFrame++;
-                _marquee.Update();
-                _bot.Update();
-            }
-
-            // Update live stats
-            UpdateStats();
-
-            // Render frame
-            RenderFrame();
-
-            await Task.Delay(_tickDelayMs);
-        }
-    }
-
-    private bool HandleKey(ConsoleKeyInfo key)
-    {
-        switch (key.Key)
-        {
-            case ConsoleKey.Q:
-            case ConsoleKey.Escape:
-                return false;
-
-            case ConsoleKey.Spacebar:
-                _paused = !_paused;
-                _footer.IsPaused = _paused;
-                break;
-
-            case ConsoleKey.H:
-                _showHelp = !_showHelp;
-                _buffer.Clear();
-                _buffer.Invalidate();
-                break;
-
-            case ConsoleKey.LeftArrow:
-            case ConsoleKey.RightArrow:
-                _layoutFlipped = !_layoutFlipped;
-                _buffer.Clear(); // Clear old content before layout change
-                _buffer.Invalidate(); // Force full redraw
-                break;
-
-            case ConsoleKey.Add:
-            case ConsoleKey.OemPlus:
-                _tickDelayMs = Math.Max(30, _tickDelayMs - 20);
-                break;
-
-            case ConsoleKey.Subtract:
-            case ConsoleKey.OemMinus:
-                _tickDelayMs = Math.Min(300, _tickDelayMs + 20);
-                break;
+            _animationFrame++;
+            _marquee.Update();
+            _bot.Update();
         }
 
-        return true;
-    }
-
-    private void UpdateStats()
-    {
+        // Update stats
         _infoPanel.UpdateStats();
 
-        // Create some memory pressure for demo
+        // Memory pressure demo
         if (_animationFrame % 8 == 0 && _memoryPressure.Count < 200)
         {
             _memoryPressure.Add(new byte[1024 * 50]);
@@ -305,28 +227,60 @@ sealed class Dashboard
             _memoryPressure.RemoveRange(0, 20);
             GC.Collect(0);
         }
+
+        // Request redraw
+        _app.Invalidate();
     }
 
-    private void RenderFrame()
+    private void RebuildLayout()
     {
-        // Rebuild main layout each frame (it references the correct content layout)
-        _mainLayout.Clear();
-        _mainLayout.Add(_marquee, LayoutSize.Fixed(1));
-        _mainLayout.Add(_spacer, LayoutSize.Fixed(1));
-        _mainLayout.Add(_layoutFlipped ? _contentLayoutFlipped : _contentLayoutNormal, LayoutSize.Fixed(16));
-        _mainLayout.Add(_spacer, LayoutSize.Fill);
+        _app.Layout.Clear();
+        _app.Layout.Add(_marquee, LayoutSize.Fixed(1));
+        _app.Layout.Add(_spacer, LayoutSize.Fixed(1));
+        _app.Layout.Add(_layoutFlipped ? _contentLayoutFlipped : _contentLayoutNormal, LayoutSize.Fixed(16));
+        _app.Layout.Add(_spacer, LayoutSize.Fill);
 
-        // Conditionally show help footer
         if (_showHelp)
         {
-            _mainLayout.Add(_footer, LayoutSize.Fixed(3)); // 3 lines for boxed footer
+            _app.Layout.Add(_footer, LayoutSize.Fixed(3));
         }
+    }
 
-        // Render to buffer (components write only changed cells)
-        _mainLayout.Render(_buffer, Region.FromTerminal(_terminal));
+    public bool HandleKey(ConsoleKeyInfo key)
+    {
+        switch (key.Key)
+        {
+            case ConsoleKey.Escape:
+                _animationTimer?.Dispose();
+                _app.Stop();
+                return true;
 
-        // Flush only changed cells to terminal
-        _buffer.Flush(_terminal);
+            case ConsoleKey.Spacebar:
+                _paused = !_paused;
+                _footer.IsPaused = _paused;
+                return true;
+
+            case ConsoleKey.H:
+                _showHelp = !_showHelp;
+                _app.Buffer.Clear();
+                RebuildLayout();
+                return true;
+
+            case ConsoleKey.LeftArrow:
+            case ConsoleKey.RightArrow:
+                _layoutFlipped = !_layoutFlipped;
+                _app.Buffer.Clear();
+                RebuildLayout();
+                return true;
+
+            default:
+                return false;
+        }
+    }
+
+    public void Render(ScreenBuffer buffer, Region region)
+    {
+        // This component doesn't render itself - it manages other components
     }
 }
 
@@ -605,6 +559,7 @@ sealed class InfoContentComponent : IComponent
     private const int LabelWidth = 10; // Right-align labels to this width
     private readonly InfoPanelComponent _info;
     private readonly Stopwatch _uptime = Stopwatch.StartNew();
+    private readonly Rule _separator = new() { Color = TerminalColor.DarkGray };
 
     public InfoContentComponent(InfoPanelComponent info)
     {
@@ -622,11 +577,8 @@ sealed class InfoContentComponent : IComponent
         buffer.Write(region.X + Environment.UserName.Length + 1, y, _info.Hostname.AsSpan(), TerminalColor.Magenta);
         y++;
 
-        // Separator line
-        for (int x = region.X; x < region.X + Math.Min(34, region.Width); x++)
-        {
-            buffer.Write(x, y, '─', TerminalColor.DarkGray);
-        }
+        // Separator line using Rule component
+        _separator.Render(buffer, new Region(region.X, y, Math.Min(34, region.Width), 1));
         y++;
 
         // System info with right-aligned labels (neofetch style)
