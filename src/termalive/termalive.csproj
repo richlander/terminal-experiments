@@ -17,7 +17,7 @@
     <PackAsTool>true</PackAsTool>
     <ToolCommandName>termalive</ToolCommandName>
     <PackageId>termalive</PackageId>
-    <Version>0.7.0</Version>
+    <Version>0.18.0</Version>
     <Description>Terminal session multiplexer - host, manage, and remotely attach to terminal sessions</Description>
     <Authors>Microsoft</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

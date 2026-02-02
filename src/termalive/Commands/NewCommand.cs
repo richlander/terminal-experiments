@@ -156,23 +156,23 @@ internal static class NewCommand
 
         try
         {
-            // Show session banner before attaching
-            Console.WriteLine($"\x1b[90m── termalive: {session.Id} ──\x1b[0m");
-            Console.WriteLine($"\x1b[90mPress Ctrl+B, D to detach\x1b[0m");
-            if (logFile != null)
-            {
-                Console.WriteLine($"\x1b[90mLogging to: {logFile}\x1b[0m");
-            }
-            Console.WriteLine();
+            // Enter alternate screen buffer (like tmux/less) - gives us a clean isolated screen
+            Console.Write("\x1b[?1049h");  // Enter alternate screen
+            Console.Write("\x1b[H");        // Home cursor
+            Console.Out.Flush();
 
-            // Resize to match terminal before entering raw mode
+            // Resize PTY to match our terminal
             await attachment.ResizeAsync(Console.WindowWidth, Console.WindowHeight);
 
-            // Enter raw terminal mode
+            // Enter raw terminal mode for byte-level passthrough
+            Console.TreatControlCAsInput = true;
             if (!RawTerminal.EnterRawMode())
             {
                 Console.Error.WriteLine("Warning: Could not enter raw mode.");
             }
+
+            // Send Ctrl+L to trigger shell redraw
+            await attachment.SendInputAsync(new byte[] { 0x0C }, CancellationToken.None);
 
             try
             {
@@ -184,16 +184,35 @@ internal static class NewCommand
                 await Task.WhenAny(inputTask, outputTask);
                 await cts.CancelAsync();
 
-                try { await inputTask; } catch (OperationCanceledException) { }
-                try { await outputTask; } catch (OperationCanceledException) { }
+                // Wait for tasks, ignoring cancellation
+                try { await inputTask; } catch (OperationCanceledException) { } catch (AggregateException) { }
+                try { await outputTask; } catch (OperationCanceledException) { } catch (AggregateException) { }
             }
             finally
             {
                 RawTerminal.RestoreMode();
+                Console.TreatControlCAsInput = false;
+                
+                // Exit alternate screen buffer - restores original terminal content
+                Console.Write("\x1b[?1049l");
+                Console.Out.Flush();
             }
 
-            Console.WriteLine();
-            Console.WriteLine("Detached.");
+            Console.WriteLine("[detached]");
+        }
+        catch (OperationCanceledException)
+        {
+            // Normal detach - still need to exit alternate screen
+            Console.Write("\x1b[?1049l");
+            Console.Out.Flush();
+            Console.WriteLine("[detached]");
+        }
+        catch (Exception ex)
+        {
+            Console.Write("\x1b[?1049l");
+            Console.Out.Flush();
+            Console.Error.WriteLine($"Error: {ex.Message}");
+            return 1;
         }
         finally
         {
@@ -207,9 +226,12 @@ internal static class NewCommand
         return 0;
     }
 
+    [System.Runtime.InteropServices.DllImport("libc")]
+    private static extern nint read(int fd, byte[] buf, nint count);
+
     private static void ReadInputLoop(ISessionAttachment attachment, CancellationTokenSource cts)
     {
-        using var stdin = Console.OpenStandardInput();
+        // Read raw bytes from fd 0 directly (bypass .NET's stream buffering)
         var buffer = new byte[256];
         bool ctrlB = false;
 
@@ -218,7 +240,8 @@ internal static class NewCommand
             int bytesRead;
             try
             {
-                bytesRead = stdin.Read(buffer, 0, buffer.Length);
+                // Direct syscall to read from stdin
+                bytesRead = (int)read(0, buffer, (nint)buffer.Length);
             }
             catch
             {
@@ -237,6 +260,7 @@ internal static class NewCommand
                     ctrlB = false;
                     if (b == 'd' || b == 'D')
                     {
+                        // Detach!
                         if (sendStart < i - 1)
                         {
                             attachment.SendInputAsync(buffer.AsMemory(sendStart, i - 1 - sendStart), cts.Token).AsTask().Wait();
@@ -247,13 +271,15 @@ internal static class NewCommand
                     }
                     else
                     {
+                        // Not D, send the Ctrl+B we were holding
                         attachment.SendInputAsync(new byte[] { 0x02 }, cts.Token).AsTask().Wait();
                     }
                     continue;
                 }
 
-                if (b == 0x02)
+                if (b == 0x02) // Ctrl+B
                 {
+                    // Send any pending bytes before the Ctrl+B
                     if (sendStart < i)
                     {
                         attachment.SendInputAsync(buffer.AsMemory(sendStart, i - sendStart), cts.Token).AsTask().Wait();
@@ -264,6 +290,7 @@ internal static class NewCommand
                 }
             }
 
+            // Send remaining bytes
             if (sendStart < bytesRead && !ctrlB)
             {
                 attachment.SendInputAsync(buffer.AsMemory(sendStart, bytesRead - sendStart), cts.Token).AsTask().Wait();

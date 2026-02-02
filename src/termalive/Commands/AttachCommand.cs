@@ -59,36 +59,23 @@ internal static class AttachCommand
 
         try
         {
-            Console.WriteLine($"Attached to session: {attachment.SessionInfo.Id}");
-            Console.WriteLine($"Press Ctrl+B, D to detach.");
-            if (logFile != null)
-            {
-                Console.WriteLine($"Logging to: {logFile}");
-            }
-            Console.WriteLine();
+            // Enter alternate screen buffer (like tmux/less) - gives us a clean isolated screen
+            Console.Write("\x1b[?1049h");  // Enter alternate screen
+            Console.Write("\x1b[H");        // Home cursor
+            Console.Out.Flush();
 
-            // Write buffered output
-            if (attachment.BufferedOutput.Length > 0)
-            {
-                using var stdout = Console.OpenStandardOutput();
-                await stdout.WriteAsync(attachment.BufferedOutput);
-                await stdout.FlushAsync();
-
-                // Also log buffered output
-                if (logStream != null)
-                {
-                    await logStream.WriteAsync(attachment.BufferedOutput);
-                }
-            }
-
-            // Resize to match terminal before entering raw mode
+            // Resize PTY to match our terminal
             await attachment.ResizeAsync(Console.WindowWidth, Console.WindowHeight);
 
-            // Enter raw terminal mode for proper PTY passthrough
+            // Enter raw terminal mode for byte-level passthrough
+            Console.TreatControlCAsInput = true;
             if (!RawTerminal.EnterRawMode())
             {
-                Console.Error.WriteLine("Warning: Could not enter raw mode. Some features may not work correctly.");
+                Console.Error.WriteLine("Warning: Could not enter raw mode.");
             }
+
+            // Send Ctrl+L to trigger shell redraw
+            await attachment.SendInputAsync(new byte[] { 0x0C }, CancellationToken.None);
 
             try
             {
@@ -102,17 +89,34 @@ internal static class AttachCommand
                 await Task.WhenAny(inputTask, outputTask);
                 await cts.CancelAsync();
 
-                // Wait for both to finish
-                try { await inputTask; } catch (OperationCanceledException) { }
-                try { await outputTask; } catch (OperationCanceledException) { }
+                // Wait for both to finish, ignoring cancellation
+                try { await inputTask; } catch (OperationCanceledException) { } catch (AggregateException) { }
+                try { await outputTask; } catch (OperationCanceledException) { } catch (AggregateException) { }
             }
             finally
             {
                 RawTerminal.RestoreMode();
+                Console.TreatControlCAsInput = false;
+                
+                // Exit alternate screen buffer
+                Console.Write("\x1b[?1049l");
+                Console.Out.Flush();
             }
 
-            Console.WriteLine();
-            Console.WriteLine("Detached.");
+            Console.WriteLine("[detached]");
+        }
+        catch (OperationCanceledException)
+        {
+            Console.Write("\x1b[?1049l");
+            Console.Out.Flush();
+            Console.WriteLine("[detached]");
+        }
+        catch (Exception ex)
+        {
+            Console.Write("\x1b[?1049l");
+            Console.Out.Flush();
+            Console.Error.WriteLine($"Error: {ex.Message}");
+            return 1;
         }
         finally
         {
@@ -126,10 +130,12 @@ internal static class AttachCommand
         return 0;
     }
 
+    [System.Runtime.InteropServices.DllImport("libc")]
+    private static extern nint read(int fd, byte[] buf, nint count);
+
     private static void ReadInputLoop(ISessionAttachment attachment, CancellationTokenSource cts)
     {
-        // Use blocking reads on a thread - more reliable with raw mode
-        using var stdin = Console.OpenStandardInput();
+        // Read raw bytes from fd 0 directly (bypass .NET's stream buffering)
         var buffer = new byte[256];
         bool ctrlB = false;
 
@@ -138,19 +144,16 @@ internal static class AttachCommand
             int bytesRead;
             try
             {
-                bytesRead = stdin.Read(buffer, 0, buffer.Length);
+                // Direct syscall to read from stdin
+                bytesRead = (int)read(0, buffer, (nint)buffer.Length);
             }
             catch
             {
                 return;
             }
 
-            if (bytesRead <= 0)
-            {
-                continue;
-            }
+            if (bytesRead <= 0) continue;
 
-            // Process input byte by byte for detach detection
             int sendStart = 0;
             for (int i = 0; i < bytesRead; i++)
             {
@@ -161,7 +164,7 @@ internal static class AttachCommand
                     ctrlB = false;
                     if (b == 'd' || b == 'D')
                     {
-                        // Detach - send any pending bytes first
+                        // Detach!
                         if (sendStart < i - 1)
                         {
                             attachment.SendInputAsync(buffer.AsMemory(sendStart, i - 1 - sendStart), cts.Token).AsTask().Wait();
@@ -172,9 +175,8 @@ internal static class AttachCommand
                     }
                     else
                     {
-                        // Send Ctrl+B that we were holding, then continue
+                        // Not D, send the Ctrl+B we were holding
                         attachment.SendInputAsync(new byte[] { 0x02 }, cts.Token).AsTask().Wait();
-                        // Current byte will be sent with the batch
                     }
                     continue;
                 }

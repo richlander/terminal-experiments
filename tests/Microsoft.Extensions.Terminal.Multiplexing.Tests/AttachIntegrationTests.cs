@@ -71,7 +71,7 @@ public class AttachIntegrationTests : IAsyncLifetime
             Environment = new Dictionary<string, string> { ["TERM"] = "xterm-256color" }
         };
 
-        await _host!.CreateSessionAsync(sessionId, ptyOptions);
+        _host!.CreateSession(sessionId, ptyOptions);
 
         // Connect and attach
         using var client = await SessionClient.ConnectAsync($"ws://localhost:{_port}/");
@@ -116,7 +116,7 @@ public class AttachIntegrationTests : IAsyncLifetime
             Environment = new Dictionary<string, string> { ["TERM"] = "xterm-256color" }
         };
 
-        await _host!.CreateSessionAsync(sessionId, ptyOptions);
+        _host!.CreateSession(sessionId, ptyOptions);
 
         using var client = await SessionClient.ConnectAsync($"ws://localhost:{_port}/");
         await using var attachment = await client.AttachAsync(sessionId);
@@ -163,7 +163,7 @@ public class AttachIntegrationTests : IAsyncLifetime
             Environment = new Dictionary<string, string> { ["TERM"] = "xterm-256color" }
         };
 
-        await _host!.CreateSessionAsync(sessionId, ptyOptions);
+        _host!.CreateSession(sessionId, ptyOptions);
 
         using var client = await SessionClient.ConnectAsync($"ws://localhost:{_port}/");
         await using var attachment = await client.AttachAsync(sessionId);
@@ -209,7 +209,7 @@ public class AttachIntegrationTests : IAsyncLifetime
             Environment = new Dictionary<string, string> { ["TERM"] = "xterm-256color" }
         };
 
-        await _host!.CreateSessionAsync(sessionId, ptyOptions);
+        _host!.CreateSession(sessionId, ptyOptions);
 
         using var client = await SessionClient.ConnectAsync($"ws://localhost:{_port}/");
         await using var attachment = await client.AttachAsync(sessionId);
@@ -260,7 +260,7 @@ public class AttachIntegrationTests : IAsyncLifetime
             Environment = new Dictionary<string, string> { ["TERM"] = "xterm-256color" }
         };
 
-        await _host!.CreateSessionAsync(sessionId, ptyOptions);
+        _host!.CreateSession(sessionId, ptyOptions);
 
         using var client = await SessionClient.ConnectAsync($"ws://localhost:{_port}/");
         await using var attachment = await client.AttachAsync(sessionId);
@@ -309,7 +309,7 @@ public class AttachIntegrationTests : IAsyncLifetime
             Environment = new Dictionary<string, string> { ["TERM"] = "xterm-256color" }
         };
 
-        await _host!.CreateSessionAsync(sessionId, ptyOptions);
+        _host!.CreateSession(sessionId, ptyOptions);
 
         // Wait for command to produce output
         await Task.Delay(500);
@@ -360,7 +360,7 @@ public class AttachIntegrationTests : IAsyncLifetime
             }
         };
 
-        await _host!.CreateSessionAsync(sessionId, ptyOptions);
+        _host!.CreateSession(sessionId, ptyOptions);
 
         using var client = await SessionClient.ConnectAsync($"ws://localhost:{_port}/");
         await using var attachment = await client.AttachAsync(sessionId);

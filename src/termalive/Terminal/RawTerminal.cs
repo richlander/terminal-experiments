@@ -10,48 +10,92 @@ namespace Termalive;
 /// </summary>
 internal static class RawTerminal
 {
-    private static Termios? _originalTermios;
+    private static TermiosMacOS? _originalTermiosMacOS;
+    private static TermiosLinux? _originalTermiosLinux;
 
     /// <summary>
     /// Enters raw mode, disabling line buffering and echo.
     /// </summary>
     public static bool EnterRawMode()
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
-            !RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
         {
-            // On Windows, use Console.TreatControlCAsInput
+            return EnterRawModeMacOS();
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            return EnterRawModeLinux();
+        }
+        else
+        {
+            // Windows - use Console API
             Console.TreatControlCAsInput = true;
             return true;
         }
+    }
 
+    private static bool EnterRawModeMacOS()
+    {
         try
         {
-            if (tcgetattr(STDIN_FILENO, out var termios) != 0)
+            if (tcgetattr_macos(STDIN_FILENO, out var termios) != 0)
             {
                 return false;
             }
 
-            _originalTermios = termios;
+            _originalTermiosMacOS = termios;
 
             // Disable canonical mode (line buffering) and echo
-            // Keep ISIG so Ctrl+C works if needed
-            termios.c_lflag &= ~(ICANON | ECHO | IEXTEN);
+            termios.c_lflag &= ~(ICANON_MAC | ECHO_MAC | IEXTEN_MAC);
 
-            // Disable some input processing but keep ICRNL for newlines
-            termios.c_iflag &= ~(IXON | BRKINT | INPCK | ISTRIP);
-
-            // KEEP output processing enabled - this is critical for proper rendering
-            // termios.c_oflag &= ~OPOST;  // DON'T disable this!
+            // Disable some input processing
+            termios.c_iflag &= ~(IXON_MAC | BRKINT_MAC | INPCK_MAC | ISTRIP_MAC);
 
             // Set character size to 8 bits
-            termios.c_cflag |= CS8;
+            termios.c_cflag |= CS8_MAC;
 
             // Read returns immediately with whatever is available
-            termios.c_cc[VMIN] = 1;
-            termios.c_cc[VTIME] = 0;
+            termios.c_cc[VMIN_MAC] = 1;
+            termios.c_cc[VTIME_MAC] = 0;
 
-            if (tcsetattr(STDIN_FILENO, TCSANOW, ref termios) != 0)
+            if (tcsetattr_macos(STDIN_FILENO, TCSANOW, ref termios) != 0)
+            {
+                return false;
+            }
+
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static bool EnterRawModeLinux()
+    {
+        try
+        {
+            if (tcgetattr_linux(STDIN_FILENO, out var termios) != 0)
+            {
+                return false;
+            }
+
+            _originalTermiosLinux = termios;
+
+            // Disable canonical mode (line buffering) and echo
+            termios.c_lflag &= ~(ICANON_LINUX | ECHO_LINUX | IEXTEN_LINUX);
+
+            // Disable some input processing
+            termios.c_iflag &= ~(IXON_LINUX | BRKINT_LINUX | INPCK_LINUX | ISTRIP_LINUX);
+
+            // Set character size to 8 bits
+            termios.c_cflag |= CS8_LINUX;
+
+            // Read returns immediately with whatever is available
+            termios.c_cc[VMIN_LINUX] = 1;
+            termios.c_cc[VTIME_LINUX] = 0;
+
+            if (tcsetattr_linux(STDIN_FILENO, TCSANOW, ref termios) != 0)
             {
                 return false;
             }
@@ -69,67 +113,99 @@ internal static class RawTerminal
     /// </summary>
     public static void RestoreMode()
     {
-        if (!RuntimeInformation.IsOSPlatform(OSPlatform.Linux) &&
-            !RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+        {
+            if (_originalTermiosMacOS.HasValue)
+            {
+                var termios = _originalTermiosMacOS.Value;
+                // Use TCSAFLUSH to discard any pending input
+                tcsetattr_macos(STDIN_FILENO, TCSAFLUSH, ref termios);
+                _originalTermiosMacOS = null;
+            }
+        }
+        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        {
+            if (_originalTermiosLinux.HasValue)
+            {
+                var termios = _originalTermiosLinux.Value;
+                // Use TCSAFLUSH to discard any pending input
+                tcsetattr_linux(STDIN_FILENO, TCSAFLUSH, ref termios);
+                _originalTermiosLinux = null;
+            }
+        }
+        else
         {
             Console.TreatControlCAsInput = false;
-            return;
-        }
-
-        if (_originalTermios.HasValue)
-        {
-            var termios = _originalTermios.Value;
-            tcsetattr(STDIN_FILENO, TCSANOW, ref termios);
-            _originalTermios = null;
         }
     }
 
     // Constants
     private const int STDIN_FILENO = 0;
-
-    // c_lflag bits
-    private const uint ECHO = 0x00000008;
-    private const uint ICANON = 0x00000100;
-    private const uint ISIG = 0x00000080;
-    private const uint IEXTEN = 0x00000400;
-
-    // c_iflag bits
-    private const uint IXON = 0x00000200;
-    private const uint ICRNL = 0x00000100;
-    private const uint BRKINT = 0x00000002;
-    private const uint INPCK = 0x00000010;
-    private const uint ISTRIP = 0x00000020;
-
-    // c_oflag bits
-    private const uint OPOST = 0x00000001;
-
-    // c_cflag bits
-    private const uint CS8 = 0x00000300;
-
-    // c_cc indices
-    private const int VMIN = 16;
-    private const int VTIME = 17;
-
-    // tcsetattr actions
     private const int TCSANOW = 0;
-    private const int TCSAFLUSH = 2;
+    private const int TCSAFLUSH = 2;  // Flush pending input before applying changes
 
+    // macOS constants (from /usr/include/sys/termios.h)
+    private const ulong ECHO_MAC = 0x00000008;
+    private const ulong ICANON_MAC = 0x00000100;
+    private const ulong IEXTEN_MAC = 0x00000400;
+    private const ulong IXON_MAC = 0x00000200;
+    private const ulong BRKINT_MAC = 0x00000002;
+    private const ulong INPCK_MAC = 0x00000010;
+    private const ulong ISTRIP_MAC = 0x00000020;
+    private const ulong CS8_MAC = 0x00000300;
+    private const int VMIN_MAC = 16;
+    private const int VTIME_MAC = 17;
+
+    // Linux constants (from /usr/include/bits/termios.h)
+    private const uint ECHO_LINUX = 0x00000008;
+    private const uint ICANON_LINUX = 0x00000002;
+    private const uint IEXTEN_LINUX = 0x00008000;
+    private const uint IXON_LINUX = 0x00000400;
+    private const uint BRKINT_LINUX = 0x00000002;
+    private const uint INPCK_LINUX = 0x00000010;
+    private const uint ISTRIP_LINUX = 0x00000020;
+    private const uint CS8_LINUX = 0x00000030;
+    private const int VMIN_LINUX = 6;
+    private const int VTIME_LINUX = 5;
+
+    // macOS termios struct (72 bytes total)
     [StructLayout(LayoutKind.Sequential)]
-    private struct Termios
+    private struct TermiosMacOS
     {
-        public uint c_iflag;
-        public uint c_oflag;
-        public uint c_cflag;
-        public uint c_lflag;
+        public ulong c_iflag;   // 8 bytes
+        public ulong c_oflag;   // 8 bytes
+        public ulong c_cflag;   // 8 bytes
+        public ulong c_lflag;   // 8 bytes
         [MarshalAs(UnmanagedType.ByValArray, SizeConst = 20)]
-        public byte[] c_cc;
-        public uint c_ispeed;
-        public uint c_ospeed;
+        public byte[] c_cc;     // 20 bytes
+        public ulong c_ispeed;  // 8 bytes
+        public ulong c_ospeed;  // 8 bytes
     }
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int tcgetattr(int fd, out Termios termios);
+    // Linux termios struct
+    [StructLayout(LayoutKind.Sequential)]
+    private struct TermiosLinux
+    {
+        public uint c_iflag;    // 4 bytes
+        public uint c_oflag;    // 4 bytes
+        public uint c_cflag;    // 4 bytes
+        public uint c_lflag;    // 4 bytes
+        public byte c_line;     // 1 byte
+        [MarshalAs(UnmanagedType.ByValArray, SizeConst = 32)]
+        public byte[] c_cc;     // 32 bytes (NCCS on Linux)
+        public uint c_ispeed;   // 4 bytes
+        public uint c_ospeed;   // 4 bytes
+    }
 
-    [DllImport("libc", SetLastError = true)]
-    private static extern int tcsetattr(int fd, int optional_actions, ref Termios termios);
+    [DllImport("libc", SetLastError = true, EntryPoint = "tcgetattr")]
+    private static extern int tcgetattr_macos(int fd, out TermiosMacOS termios);
+
+    [DllImport("libc", SetLastError = true, EntryPoint = "tcsetattr")]
+    private static extern int tcsetattr_macos(int fd, int optional_actions, ref TermiosMacOS termios);
+
+    [DllImport("libc", SetLastError = true, EntryPoint = "tcgetattr")]
+    private static extern int tcgetattr_linux(int fd, out TermiosLinux termios);
+
+    [DllImport("libc", SetLastError = true, EntryPoint = "tcsetattr")]
+    private static extern int tcsetattr_linux(int fd, int optional_actions, ref TermiosLinux termios);
 }
