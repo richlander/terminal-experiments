@@ -127,6 +127,105 @@ public class ScreenResizeTests
 
     #endregion
 
+    #region State Resize Tests - From libvterm 16state_resize
+
+    /// <summary>
+    /// Ported from: libvterm 16state_resize "Placement"
+    /// Glyph placement at boundaries before resize.
+    /// </summary>
+    [Fact]
+    public void Placement_GlyphsAtBoundary()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        // Write at column 79 (0-indexed 78) - should wrap
+        Parse(buffer, "AB\u001b[79GCD");
+
+        Assert.Equal('A', buffer.GetCell(0, 0).Character);
+        Assert.Equal('B', buffer.GetCell(1, 0).Character);
+        Assert.Equal('C', buffer.GetCell(78, 0).Character);
+        Assert.Equal('D', buffer.GetCell(79, 0).Character);
+    }
+
+    /// <summary>
+    /// Ported from: libvterm 16state_resize "Resize"
+    /// After resize to wider, content placement changes.
+    /// </summary>
+    [Fact(Skip = "Resize method not implemented")]
+    public void Resize_WiderAllowsMoreColumns()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        // Resize to 85 columns, then write at column 79
+        // buffer.Resize(85, 27);
+        Parse(buffer, "AB\u001b[79GCDE");
+
+        // After resize, column 80 and 81 should be accessible
+        Assert.Equal('E', buffer.GetCell(80, 0).Character);
+        Assert.Equal(81, buffer.CursorX);
+    }
+
+    /// <summary>
+    /// Ported from: libvterm 16state_resize "Resize without reset"
+    /// Resize preserves cursor position if within bounds.
+    /// </summary>
+    [Fact(Skip = "Resize method not implemented")]
+    public void Resize_PreservesCursorPosition()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        Parse(buffer, "\u001b[1;81H"); // Position at column 81 (would be clamped)
+
+        // Resize to wider
+        // buffer.Resize(90, 28);
+        // Cursor should remain at valid position
+
+        Parse(buffer, "FGHI");
+        // Characters should appear at new positions
+    }
+
+    /// <summary>
+    /// Ported from: libvterm 16state_resize "Resize shrink moves cursor"
+    /// When shrinking, cursor is clamped to new bounds.
+    /// </summary>
+    [Fact(Skip = "Resize method not implemented")]
+    public void ResizeShrink_ClampsCursor()
+    {
+        var buffer = CreateBuffer(100, 30);
+
+        Parse(buffer, "\u001b[1;90H"); // Position at column 90
+
+        // Shrink to 80 columns
+        // buffer.Resize(80, 25);
+
+        // Cursor should be clamped to column 79 (0-indexed)
+        Assert.True(buffer.CursorX < 80);
+    }
+
+    /// <summary>
+    /// Ported from: libvterm 16state_resize "Resize grow doesn't cancel phantom"
+    /// Phantom character (pending wrap) state is preserved on grow.
+    /// </summary>
+    [Fact(Skip = "Resize method not implemented")]
+    public void ResizeGrow_PreservesPhantomCharacter()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        // Write to last column, putting cursor in phantom state
+        Parse(buffer, "\u001b[79GAB");
+        Assert.Equal(79, buffer.CursorX);
+
+        // Resize wider
+        // buffer.Resize(100, 30);
+
+        // Cursor should now be at column 80 (no longer clamped)
+        // and next character should go to column 81
+        Parse(buffer, "C");
+        Assert.Equal('C', buffer.GetCell(80, 0).Character);
+    }
+
+    #endregion
+
     #region Basic Dimension Tests (No Resize Needed)
 
     /// <summary>

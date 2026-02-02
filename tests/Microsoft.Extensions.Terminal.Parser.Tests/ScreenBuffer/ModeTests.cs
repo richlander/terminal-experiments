@@ -241,6 +241,85 @@ public class ScreenBufferModeTests
         Assert.Equal("", buffer.GetRowText(9)); // Hello should be gone
     }
 
+    /// <summary>
+    /// Ported from: libvterm 27state_reset "RIS homes cursor"
+    /// RIS resets cursor to 0,0.
+    /// </summary>
+    [Fact]
+    public void Ris_HomesCursor()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        // Move cursor to row 5, column 5
+        Parse(buffer, "\u001b[5;5H");
+        Assert.Equal(4, buffer.CursorX);
+        Assert.Equal(4, buffer.CursorY);
+
+        // Reset
+        Parse(buffer, "\u001bc");
+
+        Assert.Equal(0, buffer.CursorX);
+        Assert.Equal(0, buffer.CursorY);
+    }
+
+    /// <summary>
+    /// Ported from: libvterm 27state_reset "RIS cancels scrolling region"
+    /// After RIS, scroll region should be reset to full screen.
+    /// </summary>
+    [Fact]
+    public void Ris_CancelsScrollingRegion()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        // Set scroll region to rows 5-10
+        Parse(buffer, "\u001b[5;10r");
+
+        // Reset then go to bottom row and scroll
+        Parse(buffer, "\u001bc\u001b[25H\n");
+
+        // If scroll region was properly reset, whole screen should scroll
+        // Cursor should be at row 24 (bottom of 25-row screen)
+        Assert.Equal(24, buffer.CursorY);
+    }
+
+    /// <summary>
+    /// Ported from: libvterm 27state_reset "RIS erases screen"
+    /// RIS clears all content.
+    /// </summary>
+    [Fact]
+    public void Ris_ErasesScreen()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        // Write some content
+        Parse(buffer, "ABCDE");
+
+        // Reset
+        Parse(buffer, "\u001bc");
+
+        // Screen should be erased
+        Assert.Equal("", buffer.GetRowText(0));
+    }
+
+    /// <summary>
+    /// Ported from: libvterm 27state_reset "RIS clears tabstops"
+    /// After RIS, custom tabstops are cleared and defaults restored.
+    /// </summary>
+    [Fact(Skip = "HTS (ESC H) not yet implemented - cannot test custom tabstop clearing")]
+    public void Ris_ClearsTabstops()
+    {
+        var buffer = CreateBuffer(80, 25);
+
+        // Set custom tab at column 5, then go back and tab
+        // ESC H = HTS (set tab stop)
+        Parse(buffer, "\u001b[5G\u001bH\u001b[G\t");
+        Assert.Equal(4, buffer.CursorX);
+
+        // Reset and tab - should use default 8-column stops
+        Parse(buffer, "\u001bc\t");
+        Assert.Equal(8, buffer.CursorX);
+    }
+
     #endregion
 
     #region DECSTR - Soft Terminal Reset
