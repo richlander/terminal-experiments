@@ -19,7 +19,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Microsoft.Extensions.Terminal\Microsoft.Extensions.Terminal.csproj" />
-    <ProjectReference Include="..\..\..\terminal-pty\src\TerminalParser\TerminalParser.csproj" />
+    <ProjectReference Include="..\Microsoft.Extensions.Terminal.Parser\Microsoft.Extensions.Terminal.Parser.csproj" />
     <InternalsVisibleTo Include="Microsoft.Extensions.Terminal.Multiplexing.Tests" />
   </ItemGroup>
 

@@ -2,7 +2,7 @@
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
 using System.Text;
-using TerminalParser;
+using Microsoft.Extensions.Terminal.Parser;
 
 namespace Microsoft.Extensions.Terminal.Multiplexing;
 

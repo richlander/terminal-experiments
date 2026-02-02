@@ -1,0 +1,8 @@
+<Solution>
+  <Project Path="src/Microsoft.Extensions.Terminal/Microsoft.Extensions.Terminal.csproj" />
+  <Project Path="src/Microsoft.Extensions.Terminal.Parser/Microsoft.Extensions.Terminal.Parser.csproj" />
+  <Project Path="src/Microsoft.Extensions.Terminal.Multiplexing/Microsoft.Extensions.Terminal.Multiplexing.csproj" />
+  <Project Path="src/termalive/termalive.csproj" />
+  <Project Path="tests/Microsoft.Extensions.Terminal.Multiplexing.Tests/Microsoft.Extensions.Terminal.Multiplexing.Tests.csproj" />
+  <Project Path="tests/Microsoft.Extensions.Terminal.Parser.Tests/Microsoft.Extensions.Terminal.Parser.Tests.csproj" />
+</Solution>

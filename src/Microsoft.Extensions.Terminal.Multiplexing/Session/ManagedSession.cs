@@ -3,7 +3,7 @@
 
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
-using TerminalParser;
+using Microsoft.Extensions.Terminal.Parser;
 
 namespace Microsoft.Extensions.Terminal.Multiplexing;
 

@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <IsAotCompatible>true</IsAotCompatible>
+    <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
+    <IsTrimmable>true</IsTrimmable>
+    
+    <!-- Package metadata -->
+    <PackageId>Microsoft.Extensions.Terminal.Parser</PackageId>
+    <Description>VT terminal escape sequence parser implementing the Paul Williams state machine</Description>
+    <Authors>Microsoft</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <PackageTags>terminal;console;ansi;vt100;parser;escape-sequences</PackageTags>
+  </PropertyGroup>
+
+</Project>
