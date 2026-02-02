@@ -3,20 +3,21 @@
 
 using System.Diagnostics;
 using System.Net;
+using System.Runtime;
 using System.Runtime.InteropServices;
-using System.Text;
 using Microsoft.Extensions.Terminal;
+using Microsoft.Extensions.Terminal.Components;
 
 // ============================================================================
 // dotnet-dashboard: An animated .NET runtime dashboard demo
 // 
-// Features:
-// - Alternate screen buffer (terminal restored on exit)
-// - Animated dotnetbot with eye tracking and badge bounce
-// - Scrolling marquee banner with custom message
-// - Live system stats (CPU, memory, GC, heap)
-// - Keyboard interaction
-// - Neofetch-style layout
+// This demo stress-tests the Microsoft.Extensions.Terminal library by using:
+// - TerminalApp for the main render loop and keyboard handling
+// - Layout for arranging components (horizontal/vertical)
+// - Panel for bordered containers
+// - Text for styled content
+// - ScreenBuffer for efficient differential rendering
+// - Custom IComponent implementations for animation
 // ============================================================================
 
 const string Version = "0.1.0";
@@ -77,7 +78,7 @@ if (!useAnsi)
     return 1;
 }
 
-// Create terminal
+// Create terminal and app
 var console = new SystemConsole();
 var terminal = new AnsiTerminal(console);
 
@@ -108,86 +109,85 @@ static void PrintHelp()
           q, Escape   Quit
           Space       Pause/resume animation
           +/-         Adjust animation speed
+          ←/→         Flip layout
         """);
 }
 
 // ============================================================================
-// Dashboard - Main application (neofetch-style layout)
+// Dashboard - Main application using Microsoft.Extensions.Terminal components
 // ============================================================================
 
 sealed class Dashboard
 {
-    // ANSI escape codes
-    private const string ESC = "\x1b";
-    private const string CSI = $"{ESC}[";
-    private const string RESET = $"{CSI}0m";
-    private const string BOLD = $"{CSI}1m";
-    private const string PURPLE = $"{CSI}35m";
-    private const string BOLD_PURPLE = $"{CSI}1;35m";
-    private const string WHITE = $"{CSI}37m";
-    private const string GREY = $"{CSI}90m";
-    private const string GREEN = $"{CSI}32m";
-    private const string YELLOW = $"{CSI}33m";
-    private const string RED = $"{CSI}31m";
-    private const string CYAN = $"{CSI}36m";
-    private const string BLUE = $"{CSI}34m";
-
-    private readonly AnsiTerminal _terminal;
+    private readonly ITerminal _terminal;
     private readonly string _message;
     private readonly bool _staticMode;
     private readonly int? _durationSeconds;
     private readonly Stopwatch _stopwatch = new();
-    private readonly StringBuilder _frameBuffer = new(4096);
 
-    // Layout constants
-    private const int BOT_WIDTH = 28;
-    private const int BAR_WIDTH = 20;
+    // Components
+    private ScreenBuffer _buffer = null!;
+    private readonly MarqueeComponent _marquee;
+    private readonly DotnetBotComponent _bot;
+    private readonly InfoPanelComponent _infoPanel;
+    private readonly FooterComponent _footer;
+    private readonly SpacerComponent _spacer = new();
+
+    // Cached layouts (reused each frame to avoid allocations)
+    private readonly Layout _mainLayout;
+    private readonly Layout _contentLayoutNormal;
+    private readonly Layout _contentLayoutFlipped;
 
     // Animation state
-    private int _marqueeOffset;
-    private int _eyePosition; // 0=left, 1=center, 2=right
-    private bool _badgeUp = true;
-    private int _animationFrame;
     private bool _paused;
     private int _tickDelayMs = 100;
-    private bool _layoutFlipped; // false = bot left, true = bot right
+    private bool _layoutFlipped;
+    private bool _showHelp = true; // Toggle with 'h' key
 
-    // Cached runtime info (don't fetch every frame)
-    private string? _cachedSdkVersion;
-    private int _cachedRuntimeCount;
-    private int _cachedSdkCount;
-    private string? _cachedOsName;
-    private string? _cachedHostname;
+    // Memory pressure for demo
+    private readonly List<byte[]> _memoryPressure = new();
+    private int _animationFrame;
 
-    // Live stats
-    private long _heapBytes;
-    private long _heapCeiling = 5 * 1024 * 1024; // Start at 5 MiB ceiling
-    private int _gcGen0;
-    private int _gcGen1;
-    private int _gcGen2;
-    private int _lastGcGen0;
-    private bool _needsFullClear; // Set when layout changes
-    private readonly List<byte[]> _memoryPressure = new(); // For demo: causes heap to grow
-
-    public Dashboard(AnsiTerminal terminal, string message, bool staticMode, int? durationSeconds)
+    public Dashboard(ITerminal terminal, string message, bool staticMode, int? durationSeconds)
     {
         _terminal = terminal;
         _message = message;
         _staticMode = staticMode;
         _durationSeconds = durationSeconds;
+
+        // Create components
+        _marquee = new MarqueeComponent(message);
+        _bot = new DotnetBotComponent();
+        _infoPanel = new InfoPanelComponent();
+        _footer = new FooterComponent(_stopwatch);
+
+        // Pre-build layouts (reused each frame)
+        _contentLayoutNormal = new Layout { Direction = LayoutDirection.Horizontal };
+        _contentLayoutNormal.Add(_bot, LayoutSize.Fixed(28));
+        _contentLayoutNormal.Add(_spacer, LayoutSize.Fixed(2));
+        _contentLayoutNormal.Add(_infoPanel, LayoutSize.Fixed(40));
+
+        _contentLayoutFlipped = new Layout { Direction = LayoutDirection.Horizontal };
+        _contentLayoutFlipped.Add(_infoPanel, LayoutSize.Fixed(40));
+        _contentLayoutFlipped.Add(_spacer, LayoutSize.Fixed(2));
+        _contentLayoutFlipped.Add(_bot, LayoutSize.Fixed(28));
+
+        _mainLayout = new Layout { Direction = LayoutDirection.Vertical };
     }
 
     public async Task<int> RunAsync()
     {
         // Cache static info once
-        CacheStaticInfo();
+        _infoPanel.CacheStaticInfo();
 
         // Enter alternate screen and hide cursor
-        Console.Write($"{CSI}?1049h{CSI}?25l");
+        Console.Write(AnsiCodes.EnterAlternateScreen);
+        _terminal.HideCursor();
         Console.CancelKeyPress += OnCancelKeyPress;
 
         try
         {
+            _buffer = new ScreenBuffer(_terminal.Width, _terminal.Height);
             _stopwatch.Start();
             await RenderLoopAsync();
             return 0;
@@ -195,18 +195,10 @@ sealed class Dashboard
         finally
         {
             // Restore terminal
-            Console.Write($"{CSI}?25h{CSI}?1049l");
+            _terminal.ShowCursor();
+            Console.Write(AnsiCodes.ExitAlternateScreen);
             Console.CancelKeyPress -= OnCancelKeyPress;
         }
-    }
-
-    private void CacheStaticInfo()
-    {
-        _cachedSdkVersion = GetDotnetSdkVersion();
-        _cachedRuntimeCount = CountDotnetRuntimes();
-        _cachedSdkCount = CountDotnetSdks();
-        _cachedOsName = GetOsName();
-        _cachedHostname = Dns.GetHostName();
     }
 
     private void OnCancelKeyPress(object? sender, ConsoleCancelEventArgs e)
@@ -224,6 +216,14 @@ sealed class Dashboard
                 break;
             }
 
+            // Check for terminal resize
+            if (_buffer.Width != _terminal.Width || _buffer.Height != _terminal.Height)
+            {
+                _buffer = new ScreenBuffer(_terminal.Width, _terminal.Height);
+                _buffer.Invalidate();
+            }
+
+            // Handle input
             while (Console.KeyAvailable)
             {
                 var key = Console.ReadKey(intercept: true);
@@ -233,12 +233,18 @@ sealed class Dashboard
                 }
             }
 
+            // Update animations
             if (!_paused && !_staticMode)
             {
-                UpdateAnimation();
+                _animationFrame++;
+                _marquee.Update();
+                _bot.Update();
             }
 
+            // Update live stats
             UpdateStats();
+
+            // Render frame
             RenderFrame();
 
             await Task.Delay(_tickDelayMs);
@@ -255,12 +261,20 @@ sealed class Dashboard
 
             case ConsoleKey.Spacebar:
                 _paused = !_paused;
+                _footer.IsPaused = _paused;
+                break;
+
+            case ConsoleKey.H:
+                _showHelp = !_showHelp;
+                _buffer.Clear();
+                _buffer.Invalidate();
                 break;
 
             case ConsoleKey.LeftArrow:
             case ConsoleKey.RightArrow:
                 _layoutFlipped = !_layoutFlipped;
-                _needsFullClear = true; // Force full screen clear on flip
+                _buffer.Clear(); // Clear old content before layout change
+                _buffer.Invalidate(); // Force full redraw
                 break;
 
             case ConsoleKey.Add:
@@ -277,217 +291,98 @@ sealed class Dashboard
         return true;
     }
 
-    private void UpdateAnimation()
-    {
-        _animationFrame++;
-        _marqueeOffset++;
-
-        // Update eye position every 30 frames
-        if (_animationFrame % 30 == 0)
-        {
-            _eyePosition = (_eyePosition + 1) % 3;
-        }
-
-        // Bounce badge every 5 frames
-        if (_animationFrame % 5 == 0)
-        {
-            _badgeUp = !_badgeUp;
-        }
-    }
-
     private void UpdateStats()
     {
-        _heapBytes = GC.GetTotalMemory(false);
-        
-        // Calculate ceiling as next "nice" value above current heap
-        // This keeps the bar from always being at 100% or always at 50%
-        _heapCeiling = GetNiceCeiling(_heapBytes);
+        _infoPanel.UpdateStats();
 
-        _lastGcGen0 = _gcGen0;
-        _gcGen0 = GC.CollectionCount(0);
-        _gcGen1 = GC.CollectionCount(1);
-        _gcGen2 = GC.CollectionCount(2);
-
-        // Create some memory pressure for demo (allocate small chunks periodically)
+        // Create some memory pressure for demo
         if (_animationFrame % 8 == 0 && _memoryPressure.Count < 200)
         {
-            _memoryPressure.Add(new byte[1024 * 50]); // 50KB chunks
+            _memoryPressure.Add(new byte[1024 * 50]);
         }
-        // Occasionally release to show GC activity and bar going down
         if (_animationFrame % 60 == 0 && _memoryPressure.Count > 30)
         {
             _memoryPressure.RemoveRange(0, 20);
-            GC.Collect(0); // Trigger minor GC to show activity
+            GC.Collect(0);
         }
-    }
-
-    private static long GetNiceCeiling(long bytes)
-    {
-        // Nice ceiling values in bytes: 2, 5, 10, 20, 50, 100, 200, 500 MiB, etc.
-        long[] niceValues = [
-            2 * 1024 * 1024,
-            5 * 1024 * 1024,
-            10 * 1024 * 1024,
-            20 * 1024 * 1024,
-            50 * 1024 * 1024,
-            100 * 1024 * 1024,
-            200 * 1024 * 1024,
-            500 * 1024 * 1024,
-            1024 * 1024 * 1024,
-        ];
-
-        // Find the smallest nice value that's > bytes (so bar is never at 100%)
-        foreach (var nice in niceValues)
-        {
-            if (nice > bytes)
-            {
-                return nice;
-            }
-        }
-        
-        // Fallback for very large heaps
-        return bytes * 2;
     }
 
     private void RenderFrame()
     {
-        _frameBuffer.Clear();
+        // Rebuild main layout each frame (it references the correct content layout)
+        _mainLayout.Clear();
+        _mainLayout.Add(_marquee, LayoutSize.Fixed(1));
+        _mainLayout.Add(_spacer, LayoutSize.Fixed(1));
+        _mainLayout.Add(_layoutFlipped ? _contentLayoutFlipped : _contentLayoutNormal, LayoutSize.Fixed(16));
+        _mainLayout.Add(_spacer, LayoutSize.Fill);
 
-        // Full clear if layout changed, otherwise just home
-        if (_needsFullClear)
+        // Conditionally show help footer
+        if (_showHelp)
         {
-            _frameBuffer.Append($"{CSI}2J{CSI}H");
-            _needsFullClear = false;
-        }
-        else
-        {
-            _frameBuffer.Append($"{CSI}H");
+            _mainLayout.Add(_footer, LayoutSize.Fixed(3)); // 3 lines for boxed footer
         }
 
-        int row = 1;
+        // Render to buffer (components write only changed cells)
+        _mainLayout.Render(_buffer, Region.FromTerminal(_terminal));
 
-        // === Marquee banner (single line, simple) ===
-        row = RenderMarquee(row);
-        row++;
+        // Flush only changed cells to terminal
+        _buffer.Flush(_terminal);
+    }
+}
 
-        // === Main content: Bot on left, info + gauges on right ===
-        row = RenderBotAndInfo(row);
-        row++;
+// ============================================================================
+// Custom Components - Implementing IComponent
+// ============================================================================
 
-        // === Footer ===
-        RenderFooter(row + 1);
+/// <summary>
+/// Scrolling marquee banner component.
+/// </summary>
+sealed class MarqueeComponent : IComponent
+{
+    private readonly string _message;
+    private int _offset;
 
-        // Write entire frame at once
-        Console.Write(_frameBuffer.ToString());
+    public MarqueeComponent(string message)
+    {
+        _message = $"   {message}   ";
     }
 
-    private int RenderMarquee(int startRow)
+    public void Update()
     {
-        int width = Math.Min(_terminal.Width, 120);
-        
-        // Create scrolling text
-        string paddedMessage = $"   {_message}   ";
-        int textWidth = width - 4;
-        
-        _frameBuffer.Append($"{CSI}{startRow};1H");
-        _frameBuffer.Append($"{CYAN}  ");
-        
-        // Render scrolling text
-        for (int i = 0; i < textWidth; i++)
-        {
-            int charIndex = (_marqueeOffset + i) % paddedMessage.Length;
-            _frameBuffer.Append(paddedMessage[charIndex]);
-        }
-        
-        _frameBuffer.Append($"{RESET}");
-        _frameBuffer.Append($"{CSI}K"); // Clear to end of line
-        
-        return startRow + 1;
+        _offset++;
     }
 
-    private int RenderBotAndInfo(int startRow)
+    public void Render(ScreenBuffer buffer, Region region)
     {
-        string[] botLines = GetBotFrame();
-        string[] infoLines = GetInfoLines();
-        string[] gaugeLines = GetGaugeLines();
-
-        // Combine info and gauges into a boxed panel
-        var rightContent = infoLines.Concat(gaugeLines).ToArray();
-        
-        // Calculate columns based on layout direction
-        int leftCol = 3;
-        int rightCol = _layoutFlipped ? 3 : 35;
-        int botCol = _layoutFlipped ? 50 : 3;
-
-        // Draw the info panel with box
-        int panelWidth = 38;
-        int maxLines = Math.Max(botLines.Length, rightContent.Length + 2);
-
-        for (int i = 0; i < maxLines; i++)
+        int x = region.X + 2;
+        for (int i = 0; i < region.Width - 4 && x < region.X + region.Width; i++)
         {
-            int row = startRow + i;
-            _frameBuffer.Append($"{CSI}{row};1H");
-
-            if (_layoutFlipped)
-            {
-                // Info panel on left
-                RenderInfoPanelLine(i, rightContent, panelWidth, leftCol);
-                // Bot on right
-                if (i < botLines.Length)
-                {
-                    _frameBuffer.Append($"{CSI}{row};{botCol}H");
-                    _frameBuffer.Append(botLines[i]);
-                }
-            }
-            else
-            {
-                // Bot on left
-                if (i < botLines.Length)
-                {
-                    _frameBuffer.Append($"{CSI}{row};{botCol}H");
-                    _frameBuffer.Append(botLines[i]);
-                }
-                // Info panel on right
-                RenderInfoPanelLine(i, rightContent, panelWidth, rightCol);
-            }
-
-            _frameBuffer.Append($"{CSI}K");
+            int charIndex = (_offset + i) % _message.Length;
+            buffer.Write(x++, region.Y, _message[charIndex], TerminalColor.Cyan);
         }
-
-        return startRow + maxLines;
     }
+}
 
-    private void RenderInfoPanelLine(int lineIndex, string[] content, int width, int col)
+/// <summary>
+/// Animated dotnetbot ASCII art component.
+/// </summary>
+sealed class DotnetBotComponent : IComponent
+{
+    private int _eyePosition; // 0=left, 1=center, 2=right
+    private int _frame;
+
+    public void Update()
     {
-        _frameBuffer.Append($"{CSI}{col}G");
-        
-        if (lineIndex == 0)
+        _frame++;
+        // Slow, subtle eye movement - changes every ~3 seconds at 100ms tick rate
+        if (_frame % 30 == 0)
         {
-            // Top border
-            _frameBuffer.Append($"{CYAN}╭{new string('─', width - 2)}╮{RESET}");
-        }
-        else if (lineIndex == content.Length + 1)
-        {
-            // Bottom border
-            _frameBuffer.Append($"{CYAN}╰{new string('─', width - 2)}╯{RESET}");
-        }
-        else if (lineIndex > 0 && lineIndex <= content.Length)
-        {
-            // Content line with side borders
-            _frameBuffer.Append($"{CYAN}│{RESET} ");
-            _frameBuffer.Append(content[lineIndex - 1]);
-            // Move to right edge and draw border
-            _frameBuffer.Append($"{CSI}{col + width - 1}G{CYAN}│{RESET}");
-        }
-        else if (lineIndex > content.Length + 1)
-        {
-            // Empty space below panel
+            _eyePosition = (_eyePosition + 1) % 3;
         }
     }
 
-    private string[] GetBotFrame()
+    public void Render(ScreenBuffer buffer, Region region)
     {
-        // Eye patterns
         string eyes = _eyePosition switch
         {
             0 => "(• )  (• )", // Looking left
@@ -495,101 +390,152 @@ sealed class Dashboard
             _ => " (•)  (•) ", // Center
         };
 
-        // Badge bounce
-        string badge1 = _badgeUp ? "|.NET|" : "|    |";
-        string badge2 = _badgeUp ? "|    |" : "|.NET|";
-
-        return
-        [
-            $"{PURPLE}         dNd{RESET}",
-            $"{PURPLE}         dNd{RESET}",
-            $"{PURPLE}     .dNNNNNNd.{RESET}",
-            $"{PURPLE}   dNNNNNNNNNNNNd{RESET}",
-            $"{PURPLE}  dNNNNNNNNNNNNNNNd{RESET}",
-            $"{PURPLE} dNNN{RESET}{WHITE}.-----------.{RESET}{PURPLE}NNNd{RESET}",
-            $"{PURPLE} dNNN{RESET}{WHITE}|{eyes}|{RESET}{PURPLE}NNNd{RESET}",
-            $"{PURPLE} dNNN{RESET}{WHITE}'-----------'{RESET}{PURPLE}NNNd{RESET}",
-            $"{PURPLE}   dNNNNd    dNNNNd{RESET}",
-            $"{PURPLE}    dNd {RESET}{GREY}{badge1}{RESET}{PURPLE} dNd{RESET}",
-            $"{PURPLE}    dNd {RESET}{GREY}{badge2}{RESET}{PURPLE} dNd{RESET}",
-            $"{GREY}        '----'{RESET}",
-        ];
-    }
-
-    private string[] GetInfoLines()
-    {
-        string separator = new('─', 32);
-        string dotnetVersion = RuntimeInformation.FrameworkDescription.Split(' ').LastOrDefault() ?? "?";
-
-        return
-        [
-            $"{BOLD_PURPLE}{Environment.UserName}{RESET}@{BOLD_PURPLE}{_cachedHostname}{RESET}",
-            $"{GREY}{separator}{RESET}",
-            $"{BOLD}.NET{RESET}: {dotnetVersion}",
-            $"{BOLD}SDK{RESET}: {_cachedSdkVersion}",
-            $"{BOLD}Runtimes{RESET}: {_cachedRuntimeCount}",
-            $"{BOLD}SDKs{RESET}: {_cachedSdkCount}",
-            "",
-            $"{BOLD}OS{RESET}: {_cachedOsName}",
-            $"{BOLD}Arch{RESET}: {RuntimeInformation.OSArchitecture}",
-            $"{BOLD}CPU{RESET}: {Environment.ProcessorCount} cores",
-        ];
-    }
-
-    private string[] GetGaugeLines()
-    {
-        // Calculate heap percentage relative to ceiling
-        double heapPercent = _heapCeiling > 0 
-            ? (double)_heapBytes / _heapCeiling * 100 
-            : 0;
-        heapPercent = Math.Min(99, heapPercent); // Never quite 100%
-        
-        // GC activity indicator (flashes when GC occurred)
-        bool gcJustRan = _gcGen0 > _lastGcGen0;
-        string gcIndicator = gcJustRan ? $"{YELLOW}●{RESET}" : $"{GREY}○{RESET}";
-
-        string heapBar = RenderBar(heapPercent, BAR_WIDTH);
-        string heapColor = heapPercent > 80 ? RED : heapPercent > 50 ? YELLOW : GREEN;
-
-        return
-        [
-            "",
-            $"{BOLD}Heap{RESET} {heapColor}{heapBar}{RESET} {FormatBytes(_heapBytes)}",
-            "",
-            $"{BOLD}GC{RESET} {gcIndicator}  Gen0:{CYAN}{_gcGen0,3}{RESET}  Gen1:{CYAN}{_gcGen1,2}{RESET}  Gen2:{CYAN}{_gcGen2,2}{RESET}",
-        ];
-    }
-
-    private static string RenderBar(double percent, int width)
-    {
-        int filled = (int)(percent / 100 * width);
-        filled = Math.Clamp(filled, 0, width);
-        return new string('█', filled) + new string('░', width - filled);
-    }
-
-    private void RenderFooter(int row)
-    {
-        string pauseIndicator = _paused ? $"{YELLOW}[PAUSED]{RESET} " : "";
-        string elapsed = $"Elapsed: {_stopwatch.Elapsed:mm\\:ss}";
-        string layout = _layoutFlipped ? "◀ ▶ flip" : "◀ ▶ flip";
-        string controls = "q: quit │ Space: pause │ +/-: speed";
-
-        _frameBuffer.Append($"{CSI}{row};1H");
-        _frameBuffer.Append($"  {GREY}{pauseIndicator}{elapsed} │ {layout} │ {controls}{RESET}");
-        _frameBuffer.Append($"{CSI}K");
-    }
-
-    // Helper methods
-    private static string FormatBytes(long bytes)
-    {
-        const double MiB = 1024 * 1024;
-        const double GiB = MiB * 1024;
-        return bytes switch
+        var lines = new (string text, TerminalColor color)[]
         {
-            < (long)MiB => $"{bytes / 1024.0:F1} KiB",
-            < (long)GiB => $"{bytes / MiB:F1} MiB",
-            _ => $"{bytes / GiB:F2} GiB"
+            ("         dNd", TerminalColor.DarkMagenta),
+            ("         dNd", TerminalColor.DarkMagenta),
+            ("     .dNNNNNNd.", TerminalColor.DarkMagenta),
+            ("   dNNNNNNNNNNNNd", TerminalColor.DarkMagenta),
+            ("  dNNNNNNNNNNNNNNNd", TerminalColor.DarkMagenta),
         };
+
+        int y = region.Y;
+        foreach (var (text, color) in lines)
+        {
+            if (y >= region.Y + region.Height) break;
+            buffer.Write(region.X, y++, text.AsSpan(), color);
+        }
+
+        // Face area (mixed colors)
+        if (y < region.Y + region.Height)
+        {
+            int x = region.X;
+            buffer.Write(x, y, " dNNN".AsSpan(), TerminalColor.DarkMagenta);
+            buffer.Write(x + 5, y, ".-----------.".AsSpan(), TerminalColor.Gray);
+            buffer.Write(x + 18, y, "NNNd".AsSpan(), TerminalColor.DarkMagenta);
+            y++;
+        }
+
+        if (y < region.Y + region.Height)
+        {
+            int x = region.X;
+            buffer.Write(x, y, " dNNN".AsSpan(), TerminalColor.DarkMagenta);
+            buffer.Write(x + 5, y, "|".AsSpan(), TerminalColor.Gray);
+            buffer.Write(x + 6, y, eyes.AsSpan(), TerminalColor.Gray);
+            buffer.Write(x + 16, y, "|".AsSpan(), TerminalColor.Gray);
+            buffer.Write(x + 17, y, "NNNd".AsSpan(), TerminalColor.DarkMagenta);
+            y++;
+        }
+
+        if (y < region.Y + region.Height)
+        {
+            int x = region.X;
+            buffer.Write(x, y, " dNNN".AsSpan(), TerminalColor.DarkMagenta);
+            buffer.Write(x + 5, y, "'-----------'".AsSpan(), TerminalColor.Gray);
+            buffer.Write(x + 18, y, "NNNd".AsSpan(), TerminalColor.DarkMagenta);
+            y++;
+        }
+
+        if (y < region.Y + region.Height)
+        {
+            buffer.Write(region.X, y++, "   dNNNNd    dNNNNd".AsSpan(), TerminalColor.DarkMagenta);
+        }
+
+        // Static badge (no animation)
+        if (y < region.Y + region.Height)
+        {
+            int x = region.X;
+            buffer.Write(x, y, "    dNd ".AsSpan(), TerminalColor.DarkMagenta);
+            buffer.Write(x + 8, y, "|.NET|".AsSpan(), TerminalColor.DarkGray);
+            buffer.Write(x + 14, y, " dNd".AsSpan(), TerminalColor.DarkMagenta);
+            y++;
+        }
+
+        if (y < region.Y + region.Height)
+        {
+            int x = region.X;
+            buffer.Write(x, y, "    dNd ".AsSpan(), TerminalColor.DarkMagenta);
+            buffer.Write(x + 8, y, "|    |".AsSpan(), TerminalColor.DarkGray);
+            buffer.Write(x + 14, y, " dNd".AsSpan(), TerminalColor.DarkMagenta);
+            y++;
+        }
+
+        if (y < region.Y + region.Height)
+        {
+            buffer.Write(region.X, y, "        '----'".AsSpan(), TerminalColor.DarkGray);
+        }
+    }
+}
+
+/// <summary>
+/// Info panel with system stats and gauges.
+/// </summary>
+sealed class InfoPanelComponent : IComponent
+{
+    private string? _sdkVersion;
+    private int _runtimeCount;
+    private int _sdkCount;
+    private string? _osName;
+    private string? _hostname;
+
+    private long _heapBytes;
+    private long _heapCeiling = 5 * 1024 * 1024;
+    private int _gcGen0;
+    private int _gcGen1;
+    private int _gcGen2;
+    private int _lastGcGen0;
+
+    public void CacheStaticInfo()
+    {
+        _sdkVersion = GetDotnetSdkVersion();
+        _runtimeCount = CountDotnetRuntimes();
+        _sdkCount = CountDotnetSdks();
+        _osName = GetOsName();
+        _hostname = Dns.GetHostName();
+    }
+
+    public void UpdateStats()
+    {
+        _heapBytes = GC.GetTotalMemory(false);
+        _heapCeiling = GetNiceCeiling(_heapBytes);
+        _lastGcGen0 = _gcGen0;
+        _gcGen0 = GC.CollectionCount(0);
+        _gcGen1 = GC.CollectionCount(1);
+        _gcGen2 = GC.CollectionCount(2);
+    }
+
+    public void Render(ScreenBuffer buffer, Region region)
+    {
+        // Render content directly without a panel box (neofetch style)
+        var content = new InfoContentComponent(this);
+        content.Render(buffer, region);
+    }
+
+    // Expose data for inner component
+    public string SdkVersion => _sdkVersion ?? "N/A";
+    public int RuntimeCount => _runtimeCount;
+    public int SdkCount => _sdkCount;
+    public string OsName => _osName ?? "Unknown";
+    public string Hostname => _hostname ?? "localhost";
+    public long HeapBytes => _heapBytes;
+    public long HeapCeiling => _heapCeiling;
+    public int GcGen0 => _gcGen0;
+    public int GcGen1 => _gcGen1;
+    public int GcGen2 => _gcGen2;
+    public bool GcJustRan => _gcGen0 > _lastGcGen0;
+
+    private static long GetNiceCeiling(long bytes)
+    {
+        long[] niceValues = [
+            2 * 1024 * 1024, 5 * 1024 * 1024, 10 * 1024 * 1024,
+            20 * 1024 * 1024, 50 * 1024 * 1024, 100 * 1024 * 1024,
+            200 * 1024 * 1024, 500 * 1024 * 1024, 1024 * 1024 * 1024,
+        ];
+        foreach (var nice in niceValues)
+        {
+            if (nice > bytes) return nice;
+        }
+        return bytes * 2;
     }
 
     private static string GetDotnetSdkVersion()
@@ -597,11 +543,7 @@ sealed class Dashboard
         try
         {
             var psi = new ProcessStartInfo("dotnet", "--version")
-            {
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             using var process = Process.Start(psi);
             return process?.StandardOutput.ReadToEnd().Trim() ?? "N/A";
         }
@@ -613,14 +555,9 @@ sealed class Dashboard
         try
         {
             var psi = new ProcessStartInfo("dotnet", "--list-runtimes")
-            {
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             using var process = Process.Start(psi);
-            var output = process?.StandardOutput.ReadToEnd() ?? "";
-            return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+            return process?.StandardOutput.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
         }
         catch { return 0; }
     }
@@ -630,14 +567,9 @@ sealed class Dashboard
         try
         {
             var psi = new ProcessStartInfo("dotnet", "--list-sdks")
-            {
-                RedirectStandardOutput = true,
-                UseShellExecute = false,
-                CreateNoWindow = true
-            };
+            { RedirectStandardOutput = true, UseShellExecute = false, CreateNoWindow = true };
             using var process = Process.Start(psi);
-            var output = process?.StandardOutput.ReadToEnd() ?? "";
-            return output.Split('\n', StringSplitOptions.RemoveEmptyEntries).Length;
+            return process?.StandardOutput.ReadToEnd().Split('\n', StringSplitOptions.RemoveEmptyEntries).Length ?? 0;
         }
         catch { return 0; }
     }
@@ -645,10 +577,8 @@ sealed class Dashboard
     private static string GetOsName()
     {
         if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-        {
             return $"macOS {Environment.OSVersion.Version}";
-        }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+        if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
         {
             try
             {
@@ -657,18 +587,249 @@ sealed class Dashboard
                     var lines = File.ReadAllLines("/etc/os-release");
                     var prettyName = lines.FirstOrDefault(l => l.StartsWith("PRETTY_NAME="));
                     if (prettyName != null)
-                    {
                         return prettyName.Split('=')[1].Trim('"');
-                    }
                 }
             }
             catch { }
             return "Linux";
         }
-        else if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-        {
-            return RuntimeInformation.OSDescription;
-        }
         return RuntimeInformation.OSDescription;
+    }
+}
+
+/// <summary>
+/// Inner content for the info panel (rendered inside the Panel border).
+/// </summary>
+sealed class InfoContentComponent : IComponent
+{
+    private const int LabelWidth = 10; // Right-align labels to this width
+    private readonly InfoPanelComponent _info;
+    private readonly Stopwatch _uptime = Stopwatch.StartNew();
+
+    public InfoContentComponent(InfoPanelComponent info)
+    {
+        _info = info;
+    }
+
+    public void Render(ScreenBuffer buffer, Region region)
+    {
+        int y = region.Y;
+        string dotnetVersion = RuntimeInformation.FrameworkDescription.Split(' ').LastOrDefault() ?? "?";
+
+        // User@hostname (neofetch style - both parts colored)
+        buffer.Write(region.X, y, Environment.UserName.AsSpan(), TerminalColor.Magenta);
+        buffer.Write(region.X + Environment.UserName.Length, y, "@".AsSpan(), TerminalColor.Default);
+        buffer.Write(region.X + Environment.UserName.Length + 1, y, _info.Hostname.AsSpan(), TerminalColor.Magenta);
+        y++;
+
+        // Separator line
+        for (int x = region.X; x < region.X + Math.Min(34, region.Width); x++)
+        {
+            buffer.Write(x, y, '─', TerminalColor.DarkGray);
+        }
+        y++;
+
+        // System info with right-aligned labels (neofetch style)
+        WriteKeyValue(buffer, region.X, y++, "OS", _info.OsName);
+        WriteKeyValue(buffer, region.X, y++, "Arch", RuntimeInformation.OSArchitecture.ToString());
+        WriteKeyValue(buffer, region.X, y++, "Uptime", FormatUptime(_uptime.Elapsed));
+        WriteKeyValue(buffer, region.X, y++, "CPU", $"{Environment.ProcessorCount} cores");
+
+        y++; // blank line
+
+        // .NET info
+        WriteKeyValue(buffer, region.X, y++, ".NET", dotnetVersion);
+        WriteKeyValue(buffer, region.X, y++, "SDK", _info.SdkVersion);
+        WriteKeyValue(buffer, region.X, y++, "Runtimes", _info.RuntimeCount.ToString());
+        WriteKeyValue(buffer, region.X, y++, "GC Mode", GCSettings.IsServerGC ? "Server" : "Workstation");
+        WriteKeyValue(buffer, region.X, y++, "Threads", ThreadPool.ThreadCount.ToString());
+
+        y++; // blank line
+
+        // Memory bar
+        double heapPercent = _info.HeapCeiling > 0 ? (double)_info.HeapBytes / _info.HeapCeiling * 100 : 0;
+        heapPercent = Math.Min(99, heapPercent);
+        var heapColor = heapPercent > 80 ? TerminalColor.Red : heapPercent > 50 ? TerminalColor.Yellow : TerminalColor.Green;
+
+        WriteLabel(buffer, region.X, y, "Memory");
+        RenderBar(buffer, region.X + LabelWidth + 2, y, 12, heapPercent, heapColor);
+        buffer.Write(region.X + LabelWidth + 15, y, $" {FormatBytes(_info.HeapBytes)}".AsSpan(), TerminalColor.Default);
+        y++;
+
+        // GC indicator
+        WriteLabel(buffer, region.X, y, "GC");
+        int gcX = region.X + LabelWidth + 2;
+        buffer.Write(gcX, y, _info.GcJustRan ? '●' : '○', _info.GcJustRan ? TerminalColor.Yellow : TerminalColor.DarkGray);
+        buffer.Write(gcX + 2, y, $"Gen0:{_info.GcGen0,3} Gen1:{_info.GcGen1,2} Gen2:{_info.GcGen2,2}".AsSpan(), TerminalColor.Default);
+        y++;
+
+        y++; // blank line
+
+        // Color palette (neofetch signature)
+        RenderColorPalette(buffer, region.X, y);
+    }
+
+    private static void WriteLabel(ScreenBuffer buffer, int x, int y, string label)
+    {
+        // Right-align the label
+        string padded = label.PadLeft(LabelWidth);
+        buffer.Write(x, y, padded.AsSpan(), TerminalColor.Magenta);
+        buffer.Write(x + LabelWidth, y, ": ".AsSpan(), TerminalColor.Default);
+    }
+
+    private static void WriteKeyValue(ScreenBuffer buffer, int x, int y, string key, string value)
+    {
+        WriteLabel(buffer, x, y, key);
+        buffer.Write(x + LabelWidth + 2, y, value.AsSpan(), TerminalColor.Default);
+    }
+
+    private static void RenderBar(ScreenBuffer buffer, int x, int y, int width, double percent, TerminalColor color)
+    {
+        int filled = (int)(percent / 100 * width);
+        filled = Math.Clamp(filled, 0, width);
+        
+        for (int i = 0; i < filled; i++)
+        {
+            buffer.Write(x + i, y, '█', color);
+        }
+        for (int i = filled; i < width; i++)
+        {
+            buffer.Write(x + i, y, '░', TerminalColor.DarkGray);
+        }
+    }
+
+    private static void RenderColorPalette(ScreenBuffer buffer, int x, int y)
+    {
+        // First row: dark colors
+        TerminalColor[] darkColors = [
+            TerminalColor.Black, TerminalColor.DarkRed, TerminalColor.DarkGreen, TerminalColor.DarkYellow,
+            TerminalColor.DarkBlue, TerminalColor.DarkMagenta, TerminalColor.DarkCyan, TerminalColor.Gray
+        ];
+        
+        // Second row: bright colors  
+        TerminalColor[] brightColors = [
+            TerminalColor.DarkGray, TerminalColor.Red, TerminalColor.Green, TerminalColor.Yellow,
+            TerminalColor.Blue, TerminalColor.Magenta, TerminalColor.Cyan, TerminalColor.White
+        ];
+
+        int offset = x + 2;
+        foreach (var color in darkColors)
+        {
+            buffer.Write(offset, y, "███".AsSpan(), color);
+            offset += 3;
+        }
+
+        offset = x + 2;
+        foreach (var color in brightColors)
+        {
+            buffer.Write(offset, y + 1, "███".AsSpan(), color);
+            offset += 3;
+        }
+    }
+
+    private static string FormatUptime(TimeSpan elapsed)
+    {
+        if (elapsed.TotalHours >= 1)
+            return $"{(int)elapsed.TotalHours} hours, {elapsed.Minutes} mins";
+        if (elapsed.TotalMinutes >= 1)
+            return $"{elapsed.Minutes} mins, {elapsed.Seconds} secs";
+        return $"{elapsed.Seconds} secs";
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        const double MiB = 1024 * 1024;
+        const double GiB = MiB * 1024;
+        return bytes switch
+        {
+            < (long)MiB => $"{bytes / 1024.0:F1} KiB",
+            < (long)GiB => $"{bytes / MiB:F1} MiB",
+            _ => $"{bytes / GiB:F2} GiB"
+        };
+    }
+}
+
+/// <summary>
+/// Footer component showing controls and elapsed time in a boxed panel.
+/// </summary>
+sealed class FooterComponent : IComponent
+{
+    private readonly Stopwatch _stopwatch;
+    public bool IsPaused { get; set; }
+
+    public FooterComponent(Stopwatch stopwatch)
+    {
+        _stopwatch = stopwatch;
+    }
+
+    public void Render(ScreenBuffer buffer, Region region)
+    {
+        // Use a Panel for the box
+        var panel = new Panel
+        {
+            Border = BoxBorderStyle.Rounded,
+            BorderColor = TerminalColor.DarkGray,
+            Content = new FooterContentComponent(_stopwatch, IsPaused)
+        };
+        panel.Render(buffer, region);
+    }
+}
+
+/// <summary>
+/// Inner content for the footer panel.
+/// </summary>
+sealed class FooterContentComponent : IComponent
+{
+    private readonly Stopwatch _stopwatch;
+    private readonly bool _isPaused;
+
+    public FooterContentComponent(Stopwatch stopwatch, bool isPaused)
+    {
+        _stopwatch = stopwatch;
+        _isPaused = isPaused;
+    }
+
+    public void Render(ScreenBuffer buffer, Region region)
+    {
+        int x = region.X;
+        int y = region.Y;
+
+        if (_isPaused)
+        {
+            buffer.Write(x, y, "[PAUSED] ".AsSpan(), TerminalColor.Yellow);
+            x += 9;
+        }
+
+        string elapsed = $"Elapsed: {_stopwatch.Elapsed:mm\\:ss}";
+        buffer.Write(x, y, elapsed.AsSpan(), TerminalColor.Cyan);
+        x += elapsed.Length;
+
+        buffer.Write(x, y, "  │  ".AsSpan(), TerminalColor.DarkGray);
+        x += 5;
+        buffer.Write(x, y, "q".AsSpan(), TerminalColor.White);
+        buffer.Write(x + 1, y, " quit  ".AsSpan(), TerminalColor.DarkGray);
+        x += 8;
+        buffer.Write(x, y, "h".AsSpan(), TerminalColor.White);
+        buffer.Write(x + 1, y, " hide  ".AsSpan(), TerminalColor.DarkGray);
+        x += 8;
+        buffer.Write(x, y, "Space".AsSpan(), TerminalColor.White);
+        buffer.Write(x + 5, y, " pause  ".AsSpan(), TerminalColor.DarkGray);
+        x += 13;
+        buffer.Write(x, y, "←→".AsSpan(), TerminalColor.White);
+        buffer.Write(x + 2, y, " flip  ".AsSpan(), TerminalColor.DarkGray);
+        x += 9;
+        buffer.Write(x, y, "+/-".AsSpan(), TerminalColor.White);
+        buffer.Write(x + 3, y, " speed".AsSpan(), TerminalColor.DarkGray);
+    }
+}
+
+/// <summary>
+/// Empty spacer component.
+/// </summary>
+sealed class SpacerComponent : IComponent
+{
+    public void Render(ScreenBuffer buffer, Region region)
+    {
+        // Intentionally empty - just takes up space in layout
     }
 }

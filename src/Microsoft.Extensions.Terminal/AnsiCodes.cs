@@ -141,6 +141,22 @@ public static class AnsiCodes
     /// Clears screen and moves cursor to home - common combination for full screen refresh.
     /// </summary>
     public const string ClearScreenAndHome = $"{CSI}2J{CSI}H";
+
+    /// <summary>
+    /// Switches to the alternate screen buffer. The main screen content is preserved
+    /// and will be restored when <see cref="ExitAlternateScreen"/> is written.
+    /// </summary>
+    /// <remarks>
+    /// Commonly used by full-screen applications (like vim, less, tmux) to provide
+    /// an isolated drawing area that doesn't affect the terminal's scrollback history.
+    /// </remarks>
+    public const string EnterAlternateScreen = $"{CSI}?1049h";
+
+    /// <summary>
+    /// Exits the alternate screen buffer and restores the main screen content.
+    /// </summary>
+    public const string ExitAlternateScreen = $"{CSI}?1049l";
+
     public static string Colorize(string? s, TerminalColor color)
         => string.IsNullOrWhiteSpace(s) ? s ?? string.Empty : $"{CSI}{(int)color}{SetColor}{s}{SetDefaultColor}";
 
