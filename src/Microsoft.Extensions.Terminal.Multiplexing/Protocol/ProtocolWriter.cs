@@ -109,8 +109,22 @@ internal sealed class ProtocolWriter
     /// </summary>
     public async ValueTask WriteAttachAsync(string sessionId, CancellationToken cancellationToken = default)
     {
-        var payload = Encoding.UTF8.GetBytes(sessionId);
-        await WriteMessageAsync(MessageType.Attach, payload, cancellationToken).ConfigureAwait(false);
+        await WriteAttachAsync(sessionId, 0, 0, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes an Attach request with terminal size.
+    /// </summary>
+    public async ValueTask WriteAttachAsync(string sessionId, int columns, int rows, CancellationToken cancellationToken = default)
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms, Encoding.UTF8, leaveOpen: true);
+
+        writer.Write(sessionId);
+        writer.Write((ushort)columns);
+        writer.Write((ushort)rows);
+
+        await WriteMessageAsync(MessageType.Attach, ms.ToArray(), cancellationToken).ConfigureAwait(false);
     }
 
     /// <summary>
@@ -198,6 +212,22 @@ internal sealed class ProtocolWriter
     {
         var payload = Encoding.UTF8.GetBytes(message);
         await WriteMessageAsync(MessageType.Error, payload, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes a RequestScreen message.
+    /// </summary>
+    public async ValueTask WriteRequestScreenAsync(CancellationToken cancellationToken = default)
+    {
+        await WriteMessageAsync(MessageType.RequestScreen, ReadOnlyMemory<byte>.Empty, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Writes a ScreenContent response with rendered terminal content.
+    /// </summary>
+    public async ValueTask WriteScreenContentAsync(ReadOnlyMemory<byte> renderedContent, CancellationToken cancellationToken = default)
+    {
+        await WriteMessageAsync(MessageType.ScreenContent, renderedContent, cancellationToken).ConfigureAwait(false);
     }
 
     private async ValueTask WriteMessageAsync(MessageType type, ReadOnlyMemory<byte> payload, CancellationToken cancellationToken)

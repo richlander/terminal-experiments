@@ -143,8 +143,8 @@ internal static class NewCommand
             return 0;
         }
 
-        // Auto-attach to the new session (like tmux)
-        await using var attachment = await client.AttachAsync(sessionId);
+        // Auto-attach to the new session (like tmux), passing our terminal size
+        await using var attachment = await client.AttachAsync(sessionId, Console.WindowWidth, Console.WindowHeight);
 
         // Open log file if specified
         FileStream? logStream = null;

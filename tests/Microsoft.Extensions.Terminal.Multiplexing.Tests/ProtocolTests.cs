@@ -122,7 +122,8 @@ public class ProtocolTests
 
         Assert.NotNull(msg);
         Assert.Equal(MessageType.Attach, msg.Value.Type);
-        Assert.Equal("session-xyz", ProtocolReader.ParseAttach(msg.Value.Payload));
+        var (sessionId, cols, rows) = ProtocolReader.ParseAttach(msg.Value.Payload);
+        Assert.Equal("session-xyz", sessionId);
     }
 
     [Fact]

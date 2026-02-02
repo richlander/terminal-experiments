@@ -48,7 +48,7 @@ internal static class AttachCommand
         Console.WriteLine($"Connecting to {uri}...");
 
         await using var client = await SessionClient.ConnectAsync(uri);
-        await using var attachment = await client.AttachAsync(sessionId);
+        await using var attachment = await client.AttachAsync(sessionId, Console.WindowWidth, Console.WindowHeight);
 
         // Open log file if specified
         FileStream? logStream = null;

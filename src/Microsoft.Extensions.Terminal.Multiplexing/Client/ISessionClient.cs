@@ -29,6 +29,16 @@ public interface ISessionClient : IAsyncDisposable, IDisposable
     Task<ISessionAttachment> AttachAsync(string sessionId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// Attaches to an existing session with terminal size.
+    /// </summary>
+    /// <param name="sessionId">The session ID to attach to.</param>
+    /// <param name="columns">Terminal width in columns.</param>
+    /// <param name="rows">Terminal height in rows.</param>
+    /// <param name="cancellationToken">A cancellation token.</param>
+    /// <returns>The session attachment.</returns>
+    Task<ISessionAttachment> AttachAsync(string sessionId, int columns, int rows, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// Kills a session.
     /// </summary>
     Task KillSessionAsync(string sessionId, bool force = false, CancellationToken cancellationToken = default);

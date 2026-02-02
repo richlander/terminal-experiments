@@ -287,7 +287,7 @@ public sealed class SessionHost : IAsyncDisposable, IDisposable
 
                     case MessageType.Attach:
                         {
-                            var sessionId = ProtocolReader.ParseAttach(payload);
+                            var (sessionId, cols, rows) = ProtocolReader.ParseAttach(payload);
                             var session = GetSession(sessionId);
                             if (session is null)
                             {
@@ -296,12 +296,28 @@ public sealed class SessionHost : IAsyncDisposable, IDisposable
                             }
 
                             attachedSession = session;
-                            var buffered = session.GetBufferedOutput();
-                            await writer.WriteAttachedAsync(session.Info, buffered, cancellationToken).ConfigureAwait(false);
+
+                            // Resize to client's terminal size before rendering
+                            if (cols > 0 && rows > 0)
+                            {
+                                session.Resize(cols, rows);
+                            }
+
+                            // Send rendered screen instead of raw buffer for proper terminal display
+                            var rendered = session.RenderScreen();
+                            await writer.WriteAttachedAsync(session.Info, rendered, cancellationToken).ConfigureAwait(false);
 
                             // Start streaming output
                             outputCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
                             outputTask = StreamOutputAsync(session, writer, outputCts.Token);
+                        }
+                        break;
+
+                    case MessageType.RequestScreen:
+                        if (attachedSession is not null)
+                        {
+                            var rendered = attachedSession.RenderScreen();
+                            await writer.WriteScreenContentAsync(rendered, cancellationToken).ConfigureAwait(false);
                         }
                         break;
 

@@ -177,6 +177,12 @@ public sealed class SessionClient : ISessionClient
     /// <inheritdoc/>
     public async Task<ISessionAttachment> AttachAsync(string sessionId, CancellationToken cancellationToken = default)
     {
+        return await AttachAsync(sessionId, 0, 0, cancellationToken).ConfigureAwait(false);
+    }
+
+    /// <inheritdoc/>
+    public async Task<ISessionAttachment> AttachAsync(string sessionId, int columns, int rows, CancellationToken cancellationToken = default)
+    {
         ObjectDisposedException.ThrowIf(_disposed, this);
         ArgumentException.ThrowIfNullOrWhiteSpace(sessionId);
 
@@ -188,7 +194,7 @@ public sealed class SessionClient : ISessionClient
         await _writeLock.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            await _writer.WriteAttachAsync(sessionId, cancellationToken).ConfigureAwait(false);
+            await _writer.WriteAttachAsync(sessionId, columns, rows, cancellationToken).ConfigureAwait(false);
         }
         finally
         {

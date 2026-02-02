@@ -147,9 +147,23 @@ internal sealed class ProtocolReader
     /// <summary>
     /// Parses an Attach message.
     /// </summary>
-    public static string ParseAttach(byte[] payload)
+    public static (string SessionId, int Columns, int Rows) ParseAttach(byte[] payload)
     {
-        return Encoding.UTF8.GetString(payload);
+        using var ms = new MemoryStream(payload);
+        using var reader = new BinaryReader(ms, Encoding.UTF8, leaveOpen: true);
+
+        string sessionId = reader.ReadString();
+        
+        // New format includes size, but handle legacy format too
+        ushort columns = 0;
+        ushort rows = 0;
+        if (ms.Position < ms.Length)
+        {
+            columns = reader.ReadUInt16();
+            rows = reader.ReadUInt16();
+        }
+
+        return (sessionId, columns, rows);
     }
 
     /// <summary>

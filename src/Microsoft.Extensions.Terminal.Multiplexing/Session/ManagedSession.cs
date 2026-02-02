@@ -3,6 +3,7 @@
 
 using System.Runtime.CompilerServices;
 using System.Threading.Channels;
+using TerminalParser;
 
 namespace Microsoft.Extensions.Terminal.Multiplexing;
 
@@ -24,6 +25,11 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
     private readonly CancellationTokenSource _cts = new();
     private readonly Task _readTask;
     private readonly TimeSpan? _idleTimeout;
+
+    // Virtual terminal emulation
+    private readonly VtParser _parser;
+    private ScreenBuffer _screenBuffer;
+    private readonly object _screenLock = new();
 
     private SessionState _state;
     private int? _exitCode;
@@ -55,6 +61,10 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
         _state = SessionState.Starting;
         _outputBuffer = new CircularBuffer(bufferSize);
 
+        // Initialize virtual terminal
+        _screenBuffer = new ScreenBuffer(_columns, _rows);
+        _parser = new VtParser(_screenBuffer);
+
         try
         {
             _pty = Pty.Create(options);
@@ -79,6 +89,16 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
     /// Gets the current session state.
     /// </summary>
     public SessionState State => _state;
+
+    /// <summary>
+    /// Gets the terminal width in columns.
+    /// </summary>
+    public int Columns => _columns;
+
+    /// <summary>
+    /// Gets the terminal height in rows.
+    /// </summary>
+    public int Rows => _rows;
 
     /// <summary>
     /// Gets the session information.
@@ -146,6 +166,25 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
         _pty.Resize(columns, rows);
         _columns = columns;
         _rows = rows;
+
+        // Resize screen buffer (create new one with new dimensions)
+        lock (_screenLock)
+        {
+            var newBuffer = new ScreenBuffer(columns, rows);
+            // Copy as much content as possible from old buffer
+            int copyWidth = Math.Min(_screenBuffer.Width, columns);
+            int copyHeight = Math.Min(_screenBuffer.Height, rows);
+            for (int y = 0; y < copyHeight; y++)
+            {
+                var oldRow = _screenBuffer.GetRow(y);
+                var newRow = newBuffer.GetRow(y);
+                for (int x = 0; x < copyWidth; x++)
+                {
+                    newRow[x] = oldRow[x];
+                }
+            }
+            _screenBuffer = newBuffer;
+        }
     }
 
     /// <summary>
@@ -156,6 +195,38 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
     public byte[] GetBufferedOutput()
     {
         return _outputBuffer.ToArray();
+    }
+
+    /// <summary>
+    /// Renders the current screen buffer as ANSI escape sequences.
+    /// This gives a properly sized snapshot for the current terminal dimensions.
+    /// </summary>
+    /// <returns>The rendered screen as ANSI bytes.</returns>
+    public byte[] RenderScreen()
+    {
+        lock (_screenLock)
+        {
+            return ScreenBufferRenderer.RenderFull(_screenBuffer);
+        }
+    }
+
+    /// <summary>
+    /// Renders the current screen buffer to fit a specific terminal size.
+    /// </summary>
+    /// <param name="targetWidth">Target terminal width.</param>
+    /// <param name="targetHeight">Target terminal height.</param>
+    /// <returns>The rendered screen as ANSI bytes.</returns>
+    public byte[] RenderScreen(int targetWidth, int targetHeight)
+    {
+        // For now, resize the session to match the target.
+        // A more sophisticated implementation could render at current size
+        // and let the terminal handle scrolling.
+        if (targetWidth != _columns || targetHeight != _rows)
+        {
+            Resize(targetWidth, targetHeight);
+        }
+
+        return RenderScreen();
     }
 
     /// <summary>
@@ -241,8 +312,14 @@ public sealed class ManagedSession : IAsyncDisposable, IDisposable
                 // Update activity time
                 _lastActivityTime = DateTimeOffset.UtcNow;
 
-                // Add to circular buffer
+                // Add to circular buffer (raw bytes)
                 _outputBuffer.Write(data.Span);
+
+                // Parse through VT parser to update screen buffer
+                lock (_screenLock)
+                {
+                    _parser.Parse(data.Span);
+                }
 
                 // Broadcast to subscribers
                 Channel<ReadOnlyMemory<byte>>[] subscribers;

@@ -74,6 +74,16 @@ internal enum MessageType : byte
     SessionExited = 12,
 
     /// <summary>
+    /// Request a rendered screen snapshot.
+    /// </summary>
+    RequestScreen = 13,
+
+    /// <summary>
+    /// Rendered screen content.
+    /// </summary>
+    ScreenContent = 14,
+
+    /// <summary>
     /// Error message.
     /// </summary>
     Error = 255
