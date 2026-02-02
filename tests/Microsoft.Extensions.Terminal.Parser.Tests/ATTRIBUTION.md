@@ -57,6 +57,8 @@ Many of our test cases are direct ports from the above projects, adapted to C# a
 | QueryTests.cs | libvterm t/26state_query.test |
 | StressTests.cs | Original stress testing |
 | ScreenBufferTests.cs | Original implementation tests |
+| Input/KeyboardInputTests.cs | xterm.js Keyboard.test.ts, Win32InputMode.test.ts, Windows Terminal inputTest.cpp, InputEngineTest.cpp |
+| Input/MouseInputTests.cs | Windows Terminal MouseInputTest.cpp, libvterm t/17state_mouse.test, xterm.js Mouse.test.ts |
 
 ## Test Count by Source
 
@@ -71,7 +73,9 @@ Many of our test cases are direct ports from the above projects, adapted to C# a
 | Stress tests | 26 |
 | ScreenBuffer | 41 |
 | Mode/Editing/Cursor | 86 |
-| **Total** | **388** |
+| Input/Keyboard | 203 |
+| Input/Mouse | 75 |
+| **Total** | **666** |
 
 ## References
 
