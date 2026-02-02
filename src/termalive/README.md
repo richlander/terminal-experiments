@@ -1,6 +1,6 @@
 # termalive
 
-Terminal session multiplexer - host, manage, and remotely attach to terminal sessions.
+Terminal session orchestration - create, manage, and remotely attach to persistent terminal sessions.
 
 ## Installation
 
@@ -11,62 +11,100 @@ dotnet tool install -g termalive
 ## Quick Start
 
 ```bash
-# Start the session host (background, like docker -d)
+# Start the session host daemon (required first)
 termalive start -d
 
-# Check if running
-termalive status
+# Start an inline session (like running bash in bash)
+termalive
 
-# Create a new session
-termalive new my-session --command bash
+# Or start a detached session (like docker run -d)
+termalive run my-session -- bash
 
 # List sessions
 termalive list
 
-# Attach to a session (Ctrl+B, D to detach)
+# Attach to a detached session
 termalive attach my-session
 
-# Stream session output
-termalive logs my-session --follow --wait-idle 5s
+# Stream session output (like tail -f)
+termalive logs -f my-session
 
-# Send input without attaching
-termalive send my-session "echo hello"
-
-# Terminate a session
-termalive kill my-session
-
-# Stop the host
+# Stop the daemon
 termalive stop
 ```
+
+## Design Philosophy
+
+termalive is **not** trying to be tmux. It focuses on:
+
+- **Observability**: Watch sessions without taking control (`logs -f`)
+- **Hijacking**: Take over an existing session interactively (`attach`)
+- **Parking**: Detach and resume sessions later
+- **LLM Interop**: Sessions as addressable endpoints for agent-to-agent interaction
+
+See [docs/termalive-design.md](../../docs/termalive-design.md) for full design rationale.
+
+## Session Modes
+
+### Inline Mode (default)
+```bash
+termalive                    # Start shell inline (like bash in bash)
+termalive -c python          # Start python inline
+```
+Output flows in your current terminal. Press `Ctrl+B, D` to detach.
+
+### Detached Mode
+```bash
+termalive run claude -- claude     # Start in background
+termalive run build -- npm build   # Run build detached
+```
+Returns immediately. Use `attach` or `logs` to interact.
+
+### Attach Mode
+```bash
+termalive attach my-session        # Take over session
+```
+Full-screen terminal takeover (uses alternate screen buffer).
 
 ## Commands
 
 | Command | Description |
 |---------|-------------|
+| *(none)* | Start inline attached session |
+| `run <id>` | Start a detached session (like docker run -d) |
+| `attach <id>` | Attach to session interactively |
+| `list` | List active sessions |
+| `logs <id>` | View session output (-f to follow) |
+| `send <id> <text>` | Send input without attaching |
+| `kill <id>` | Terminate a session |
 | `start` | Start the session host daemon |
 | `status` | Show daemon status |
 | `stop` | Stop the daemon |
-| `new <id>` | Create a new terminal session |
-| `list` | List active sessions |
-| `attach <id>` | Attach to a session interactively |
-| `logs <id>` | Read/stream session output |
-| `send <id> <text>` | Send input to a session |
-| `kill <id>` | Terminate a session |
 
-### start options
+### run options
 
 ```
--d, --detach         Run in background (like docker -d)
--p, --port <port>    WebSocket port (default: 7777)
---pipe <name>        Named pipe name (default: termalive)
---no-pipe            Disable named pipe server
+-c, --command <cmd>  Command to run (default: $SHELL)
+-a, --attach         Attach immediately after creating
+-e, --env <K=V>      Set environment variable
+--cwd <dir>          Working directory
+-t, --idle-timeout   Auto-terminate after idle time (e.g., 10m)
+```
+
+### logs options
+
+```
+-f, --follow         Stream output continuously (like tail -f)
+--tail <n>           Show last n lines
+--wait-idle <time>   Exit after idle period
 ```
 
 ## Use Cases
 
 - **Persistent sessions** - Terminal sessions survive disconnection
 - **Remote access** - Connect via WebSocket from another machine
-- **LLM orchestration** - Multiple AI sessions communicating with each other
+- **LLM orchestration** - AI agents running in managed sessions
+- **Build monitoring** - `termalive run build -- npm build && termalive logs -f build`
 - **Session sharing** - Multiple clients can observe the same session
 
 ## License

@@ -61,10 +61,17 @@ internal static class AttachCommand
         {
             // Enter alternate screen buffer (like tmux/less) - gives us a clean isolated screen
             Console.Write("\x1b[?1049h");  // Enter alternate screen
-            Console.Write("\x1b[H");        // Home cursor
             Console.Out.Flush();
 
-            // Resize PTY to match our terminal
+            // Display the initial rendered screen content
+            if (attachment.BufferedOutput.Length > 0)
+            {
+                using var stdout = Console.OpenStandardOutput();
+                await stdout.WriteAsync(attachment.BufferedOutput);
+                await stdout.FlushAsync();
+            }
+
+            // Resize PTY to match our terminal (in case it changed)
             await attachment.ResizeAsync(Console.WindowWidth, Console.WindowHeight);
 
             // Enter raw terminal mode for byte-level passthrough
@@ -73,9 +80,6 @@ internal static class AttachCommand
             {
                 Console.Error.WriteLine("Warning: Could not enter raw mode.");
             }
-
-            // Send Ctrl+L to trigger shell redraw
-            await attachment.SendInputAsync(new byte[] { 0x0C }, CancellationToken.None);
 
             try
             {

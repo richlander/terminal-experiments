@@ -7,8 +7,16 @@ using Microsoft.Extensions.Terminal.Multiplexing;
 namespace Termalive;
 
 /// <summary>
-/// termalive - Terminal session multiplexer
+/// termalive - Terminal session orchestration
 /// </summary>
+/// <remarks>
+/// Design philosophy:
+/// - 'termalive' alone starts an inline attached session (like bash in bash)
+/// - 'termalive run' starts a detached session (like docker run -d)
+/// - 'termalive attach' reconnects to a session (like tmux attach)
+/// 
+/// See docs/termalive-design.md for full design rationale.
+/// </remarks>
 public static class Program
 {
     private static string Version => Assembly.GetExecutingAssembly()
@@ -16,10 +24,10 @@ public static class Program
 
     public static async Task<int> Main(string[] args)
     {
-        if (args.Length == 0)
+        // No arguments or first arg is an option = inline mode
+        if (args.Length == 0 || (args[0].StartsWith("-") && args[0] != "-h" && args[0] != "--help"))
         {
-            PrintUsage();
-            return 1;
+            return await InlineCommand.RunAsync(args);
         }
 
         var command = args[0].ToLowerInvariant();
@@ -28,19 +36,32 @@ public static class Program
         {
             return command switch
             {
-                "start" => await StartCommand.RunAsync(args[1..]),
-                "status" => await StatusCommand.RunAsync(args[1..]),
-                "stop" => await StopCommand.RunAsync(args[1..]),
-                "new" => await NewCommand.RunAsync(args[1..]),
-                "list" or "ls" => await ListCommand.RunAsync(args[1..]),
+                // Session management
+                "run" => await RunCommand.RunAsync(args[1..]),
+                "new" => await NewCommand.RunAsync(args[1..]),  // Legacy, kept for compatibility
                 "attach" or "a" => await AttachCommand.RunAsync(args[1..]),
+                "list" or "ls" => await ListCommand.RunAsync(args[1..]),
                 "logs" => await LogsCommand.RunAsync(args[1..]),
                 "send" => await SendCommand.RunAsync(args[1..]),
                 "kill" => await KillCommand.RunAsync(args[1..]),
+                
+                // Daemon management
+                "start" => await StartCommand.RunAsync(args[1..]),
+                "status" => await StatusCommand.RunAsync(args[1..]),
+                "stop" => await StopCommand.RunAsync(args[1..]),
+                
+                // Help
                 "help" or "-h" or "--help" => PrintUsage(),
                 "version" or "-v" or "--version" => PrintVersion(),
+                
                 _ => UnknownCommand(command)
             };
+        }
+        catch (TimeoutException ex)
+        {
+            Console.Error.WriteLine($"Error: {ex.Message}");
+            Console.Error.WriteLine("Hint: Run 'termalive start' to start the daemon.");
+            return 1;
         }
         catch (Exception ex)
         {
@@ -51,32 +72,39 @@ public static class Program
 
     private static int PrintUsage()
     {
-        Console.WriteLine("""
-            termalive - Terminal session multiplexer
+        Console.WriteLine($"""
+            termalive - Terminal session orchestration
+            
+            Usage: termalive [command] [options]
 
-            Usage: termalive <command> [options]
+            Quick Start:
+              termalive                    Start an inline session (like bash in bash)
+              termalive run <id>           Start a detached session (like docker run -d)
+              termalive attach <id>        Attach to a session (like tmux attach)
 
-            Commands:
-              start              Start the session host daemon
-              status             Show daemon status
-              stop               Stop the daemon
-              new <id>           Create a new session
-              list, ls           List active sessions
-              attach, a <id>     Attach to a session (interactive)
-              logs <id>          Read/stream session output (JSONL)
-              send <id> <text>   Send input to a session without attaching
-              kill <id>          Terminate a session
-              help               Show this help message
-              version            Show version information
+            Session Commands:
+              run <id> [-- cmd]    Start a detached session
+              attach, a <id>       Attach to a session (interactive, full screen)
+              list, ls             List active sessions
+              logs <id>            View session output (use -f to follow)
+              send <id> <text>     Send input to a session without attaching
+              kill <id>            Terminate a session
+
+            Daemon Commands:
+              start                Start the session host daemon
+              status               Show daemon status  
+              stop                 Stop the daemon
+
+            Other:
+              help                 Show this help message
+              version              Show version information
 
             Examples:
-              termalive start -d             # Start daemon (background)
-              termalive status               # Check if running
-              termalive new my-session --command bash
-              termalive list
-              termalive attach my-session
-              termalive logs worker --follow --wait-idle 5s
-              termalive stop                 # Stop daemon
+              termalive                              # Start inline shell session
+              termalive run claude -- claude         # Start claude detached
+              termalive attach claude                # Attach to claude session
+              termalive logs -f claude               # Stream claude output
+              termalive run build -- npm run build   # Run build in background
 
             Run 'termalive <command> --help' for more information on a command.
             """);

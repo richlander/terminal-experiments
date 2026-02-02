@@ -248,6 +248,57 @@ For watch mode and multi-agent orchestration, consider an event bus:
 - Watchers subscribe to events
 - Enables reactive orchestration (e.g., "when claude-agent requests permission, notify operator")
 
+## Known Issues and Improvements
+
+### TerminalParser (terminal-pty repo)
+
+#### ScreenBuffer
+
+1. **No alternate screen buffer support** (line 744-747): The `SetMode` handler for mode 1049 (alternate screen) has a comment "Would need separate buffer implementation". This means applications that use alternate screen (vim, less, htop) won't render correctly when reattaching.
+
+2. **No scrollback buffer**: The current implementation only keeps the visible screen area. There's no scrollback history, which limits the usefulness of `termalive logs` for seeing historical output.
+
+3. **Missing wide character support**: The `Print` method handles UTF-8 codepoints but doesn't account for East Asian wide characters that occupy 2 cells. The `Width` field exists in `TerminalCell` but isn't used properly.
+
+4. **No damage tracking**: Unlike xterm.js, there's no dirty region tracking for efficient differential rendering. Every `RenderScreen()` call renders the entire buffer.
+
+#### VtParser
+
+1. **Limited OSC support**: Only handles OSC 0, 1, 2 (window titles). Missing OSC 7 (current directory), OSC 8 (hyperlinks), OSC 52 (clipboard), and the proposed OSC 7777 for termalive state signaling.
+
+2. **No DECSET/DECRST mode persistence**: Modes like bracketed paste (mode 2004), focus events (mode 1004), and mouse tracking aren't implemented.
+
+3. **Single intermediate byte**: The parser only tracks one intermediate byte (line 275, 359), but some sequences use multiple intermediates.
+
+### Multiplexing (Microsoft.Extensions.Terminal.Multiplexing)
+
+#### UnixPty
+
+1. **Blocking reads wrapped in Task.Run** (line 185): This works but is inefficient. Should use `poll()` or `select()` with async I/O for better scalability.
+
+2. **Polling for exit** (line 150-161): Uses 100ms polling loop for `WaitForExitAsync`. Could use `signalfd` or `SIGCHLD` handler for immediate notification.
+
+3. **No SIGWINCH handling**: Resize signals from the client are sent but the PTY doesn't propagate size changes to child properly in all cases.
+
+#### ManagedSession
+
+1. **Screen buffer resize loses content** (line 171-187): When resizing, a new buffer is created and content is copied, but this doesn't handle the case where the terminal application should reflow text.
+
+2. **CircularBuffer vs ScreenBuffer confusion**: There are two buffers - `_outputBuffer` (raw bytes) and `_screenBuffer` (parsed state). The relationship is confusing and `GetBufferedOutput()` vs `RenderScreen()` serve different purposes that aren't well documented.
+
+#### SessionHost
+
+1. **Single client per session for streaming**: The current design attaches one client at a time for input. Multiple observers should be able to stream output simultaneously (read-only).
+
+### Recommended Priority
+
+1. **High**: Add OSC 7777 parsing for state signaling (enables watch mode)
+2. **High**: Support multiple read-only observers per session
+3. **Medium**: Implement alternate screen buffer in ScreenBuffer
+4. **Medium**: Add scrollback buffer for historical output
+5. **Low**: Improve PTY async I/O efficiency
+6. **Low**: Add damage tracking for differential rendering
+
 ## Future Considerations
 
 ### Multi-Session Views

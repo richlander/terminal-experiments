@@ -1,35 +1,34 @@
 // Copyright (c) Microsoft Corporation. All rights reserved.
 // Licensed under the MIT license. See LICENSE file in the project root for full license information.
 
-using System.Text;
 using Microsoft.Extensions.Terminal.Multiplexing;
 
 namespace Termalive;
 
 /// <summary>
-/// Creates a new session.
+/// Starts an inline attached session (like running bash in bash).
+/// This is the default mode when running 'termalive' with no command.
 /// </summary>
-internal static class NewCommand
+/// <remarks>
+/// Design: Unlike 'attach' which uses alternate screen buffer, inline mode
+/// streams output directly to the terminal without clearing the screen.
+/// This provides a more natural experience similar to running 'su' or 'ssh'.
+/// 
+/// Inspired by: bash subshells, su, ssh inline behavior.
+/// </remarks>
+internal static class InlineCommand
 {
     public static async Task<int> RunAsync(string[] args)
     {
-        if (args.Length == 0 || args[0].StartsWith("-"))
-        {
-            PrintHelp();
-            return 1;
-        }
-
-        string sessionId = args[0];
         string? command = null;
         string? workingDirectory = null;
         string uri = "pipe://termalive";
         TimeSpan? idleTimeout = null;
-        bool detach = false;
         string? logFile = null;
         string? termOverride = null;
         var environment = new Dictionary<string, string>();
 
-        for (int i = 1; i < args.Length; i++)
+        for (int i = 0; i < args.Length; i++)
         {
             switch (args[i])
             {
@@ -44,9 +43,6 @@ internal static class NewCommand
                     {
                         workingDirectory = args[++i];
                     }
-                    break;
-                case "-d" or "--detach":
-                    detach = true;
                     break;
                 case "--log" or "-l":
                     if (i + 1 < args.Length)
@@ -93,32 +89,29 @@ internal static class NewCommand
         command ??= Environment.GetEnvironmentVariable("SHELL") ?? "/bin/sh";
 
         // Ensure TERM is set - use xterm-256color as safe default
-        // Many exotic terminals (ghostty, kitty, alacritty) set custom TERM values
-        // that may not be in the terminfo database on remote/container systems
         if (!environment.ContainsKey("TERM"))
         {
             if (termOverride != null)
             {
-                // Explicit override
                 environment["TERM"] = termOverride;
             }
             else
             {
                 var parentTerm = Environment.GetEnvironmentVariable("TERM");
-
-                // Use parent TERM only if it's a common/safe value
                 var safeTerm = parentTerm switch
                 {
                     "xterm" or "xterm-256color" or "xterm-color" => parentTerm,
                     "screen" or "screen-256color" => parentTerm,
                     "tmux" or "tmux-256color" => parentTerm,
                     "linux" or "vt100" or "vt220" => parentTerm,
-                    _ => "xterm-256color" // Safe fallback for exotic terminals
+                    _ => "xterm-256color"
                 };
-
                 environment["TERM"] = safeTerm;
             }
         }
+
+        // Generate a session ID
+        var sessionId = $"inline-{Guid.NewGuid():N}"[..16];
 
         var options = new PtyOptions
         {
@@ -133,17 +126,7 @@ internal static class NewCommand
         await using var client = await SessionClient.ConnectAsync(uri);
         var session = await client.CreateSessionAsync(sessionId, options);
 
-        if (detach)
-        {
-            // Just print session info and exit
-            Console.WriteLine($"Created session: {session.Id}");
-            Console.WriteLine($"  Command: {session.Command}");
-            Console.WriteLine($"  Working Directory: {session.WorkingDirectory}");
-            Console.WriteLine($"  Size: {session.Columns}x{session.Rows}");
-            return 0;
-        }
-
-        // Auto-attach to the new session (like tmux), passing our terminal size
+        // Auto-attach to the new session
         await using var attachment = await client.AttachAsync(sessionId, Console.WindowWidth, Console.WindowHeight);
 
         // Open log file if specified
@@ -156,11 +139,11 @@ internal static class NewCommand
 
         try
         {
-            // Enter alternate screen buffer (like tmux/less) - gives us a clean isolated screen
-            Console.Write("\x1b[?1049h");  // Enter alternate screen
-            Console.Out.Flush();
+            // Show inline indicator - no alternate screen buffer!
+            // This is the key difference from AttachCommand
+            Console.WriteLine($"[termalive: {sessionId}] (Ctrl+B, D to detach)");
 
-            // Display the initial rendered screen content
+            // Display any buffered output inline (no screen clearing)
             if (attachment.BufferedOutput.Length > 0)
             {
                 using var stdout = Console.OpenStandardOutput();
@@ -168,7 +151,7 @@ internal static class NewCommand
                 await stdout.FlushAsync();
             }
 
-            // Resize PTY to match our terminal (in case it changed)
+            // Resize PTY to match our terminal
             await attachment.ResizeAsync(Console.WindowWidth, Console.WindowHeight);
 
             // Enter raw terminal mode for byte-level passthrough
@@ -188,7 +171,6 @@ internal static class NewCommand
                 await Task.WhenAny(inputTask, outputTask);
                 await cts.CancelAsync();
 
-                // Wait for tasks, ignoring cancellation
                 try { await inputTask; } catch (OperationCanceledException) { } catch (AggregateException) { }
                 try { await outputTask; } catch (OperationCanceledException) { } catch (AggregateException) { }
             }
@@ -197,24 +179,19 @@ internal static class NewCommand
                 RawTerminal.RestoreMode();
                 Console.TreatControlCAsInput = false;
                 
-                // Exit alternate screen buffer - restores original terminal content
-                Console.Write("\x1b[?1049l");
-                Console.Out.Flush();
+                // No alternate screen to exit - just print detach message
             }
 
-            Console.WriteLine("[detached]");
+            Console.WriteLine();
+            Console.WriteLine($"[detached from {sessionId}]");
         }
         catch (OperationCanceledException)
         {
-            // Normal detach - still need to exit alternate screen
-            Console.Write("\x1b[?1049l");
-            Console.Out.Flush();
-            Console.WriteLine("[detached]");
+            Console.WriteLine();
+            Console.WriteLine($"[detached from {sessionId}]");
         }
         catch (Exception ex)
         {
-            Console.Write("\x1b[?1049l");
-            Console.Out.Flush();
             Console.Error.WriteLine($"Error: {ex.Message}");
             return 1;
         }
@@ -235,7 +212,6 @@ internal static class NewCommand
 
     private static void ReadInputLoop(ISessionAttachment attachment, CancellationTokenSource cts)
     {
-        // Read raw bytes from fd 0 directly (bypass .NET's stream buffering)
         var buffer = new byte[256];
         bool ctrlB = false;
 
@@ -244,7 +220,6 @@ internal static class NewCommand
             int bytesRead;
             try
             {
-                // Direct syscall to read from stdin
                 bytesRead = (int)read(0, buffer, (nint)buffer.Length);
             }
             catch
@@ -275,7 +250,6 @@ internal static class NewCommand
                     }
                     else
                     {
-                        // Not D, send the Ctrl+B we were holding
                         attachment.SendInputAsync(new byte[] { 0x02 }, cts.Token).AsTask().Wait();
                     }
                     continue;
@@ -283,7 +257,6 @@ internal static class NewCommand
 
                 if (b == 0x02) // Ctrl+B
                 {
-                    // Send any pending bytes before the Ctrl+B
                     if (sendStart < i)
                     {
                         attachment.SendInputAsync(buffer.AsMemory(sendStart, i - sendStart), cts.Token).AsTask().Wait();
@@ -294,7 +267,6 @@ internal static class NewCommand
                 }
             }
 
-            // Send remaining bytes
             if (sendStart < bytesRead && !ctrlB)
             {
                 attachment.SendInputAsync(buffer.AsMemory(sendStart, bytesRead - sendStart), cts.Token).AsTask().Wait();
@@ -311,7 +283,6 @@ internal static class NewCommand
             await stdout.WriteAsync(data, cancellationToken);
             await stdout.FlushAsync(cancellationToken);
 
-            // Also write to log file if specified
             if (logStream != null)
             {
                 await logStream.WriteAsync(data, cancellationToken);
@@ -321,7 +292,6 @@ internal static class NewCommand
 
     private static TimeSpan? ParseTimeout(string value)
     {
-        // Support formats: "10m", "1h", "30s", "5" (minutes)
         if (string.IsNullOrWhiteSpace(value))
         {
             return null;
@@ -352,7 +322,6 @@ internal static class NewCommand
         }
         else if (int.TryParse(value, out var defaultMinutes))
         {
-            // Default to minutes if no suffix
             return TimeSpan.FromMinutes(defaultMinutes);
         }
 
@@ -363,16 +332,13 @@ internal static class NewCommand
     private static void PrintHelp()
     {
         Console.WriteLine("""
-            Usage: termalive new <session-id> [options]
+            Usage: termalive [options]
 
-            Create a new terminal session and attach to it.
-
-            Arguments:
-              <session-id>         Unique identifier for the session
+            Start an inline terminal session that can be detached and resumed.
+            Unlike 'attach', this runs inline in your current terminal (like bash or su).
 
             Options:
               -c, --command <cmd>  Command to run (default: $SHELL or /bin/sh)
-              -d, --detach         Create session without attaching
               -l, --log <file>     Log all terminal output to file (raw bytes)
               --term <value>       Set TERM (default: xterm-256color for exotic terminals)
               --cwd <dir>          Working directory (default: current directory)
@@ -381,11 +347,17 @@ internal static class NewCommand
               -t, --idle-timeout   Terminate session after idle time (e.g., 10m, 1h, 30s)
               -h, --help           Show this help message
 
+            Keybindings:
+              Ctrl+B, D            Detach from session (session continues running)
+
             Examples:
-              termalive new my-session                       # Create and attach
-              termalive new dev -d                           # Create detached
-              termalive new claude-test --command claude --log /tmp/claude.log
-              termalive new work --command "bash" --cwd ~/projects
+              termalive                          # Start default shell
+              termalive -c python                # Start Python REPL
+              termalive --command "npm run dev"  # Start dev server
+
+            To reattach to a detached session:
+              termalive list                     # Find session ID
+              termalive attach <session-id>      # Reattach
             """);
     }
 }
