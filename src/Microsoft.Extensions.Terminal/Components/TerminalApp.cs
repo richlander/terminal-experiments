@@ -6,8 +6,9 @@ namespace Microsoft.Extensions.Terminal.Components;
 /// <summary>
 /// An interactive terminal application with a render loop and focus management.
 /// </summary>
-public sealed class TerminalApp
+public sealed class TerminalApp : IDisposable
 {
+    private bool _disposed;
     private readonly ITerminal _terminal;
     private readonly Layout _layout;
     private readonly List<IInteractiveComponent> _focusableComponents = new();
@@ -247,5 +248,28 @@ public sealed class TerminalApp
         _focusableComponents[_focusIndex].IsFocused = false;
         _focusIndex = (_focusIndex + direction + _focusableComponents.Count) % _focusableComponents.Count;
         _focusableComponents[_focusIndex].IsFocused = true;
+    }
+
+    /// <summary>
+    /// Disposes of the resources used by the terminal application.
+    /// </summary>
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        _running = false;
+
+        // Clear focus from all components
+        foreach (var component in _focusableComponents)
+        {
+            component.IsFocused = false;
+        }
+
+        _focusableComponents.Clear();
+        _focusIndex = 0;
     }
 }
