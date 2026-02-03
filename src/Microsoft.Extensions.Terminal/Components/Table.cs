@@ -91,7 +91,12 @@ public sealed class Table : IInteractiveComponent
     /// </summary>
     public Table AddRow(params string[] values)
     {
-        var cells = values.Select(v => new TableCell(v)).ToArray();
+        var cells = new TableCell[values.Length];
+        for (int i = 0; i < values.Length; i++)
+        {
+            cells[i] = new TableCell(values[i]);
+        }
+
         _rows.Add(new TableRow(cells));
         return this;
     }
