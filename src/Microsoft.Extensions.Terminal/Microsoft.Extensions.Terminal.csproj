@@ -10,7 +10,8 @@
     <IsTrimmable>true</IsTrimmable>
     
     <!-- Package metadata -->
-    <PackageId>Microsoft.Extensions.Terminal</PackageId>
+    <PackageId>RichLander.Experimental.Terminal</PackageId>
+    <Version>0.1.0-preview.1</Version>
     <Description>A NativeAOT-compatible terminal library for .NET</Description>
     <Authors>Microsoft</Authors>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>

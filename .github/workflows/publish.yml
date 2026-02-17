@@ -1,0 +1,27 @@
+name: Publish NuGet Package
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/Microsoft.Extensions.Terminal/**'
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+          dotnet-quality: 'preview'
+
+      - name: Pack
+        run: dotnet pack src/Microsoft.Extensions.Terminal/Microsoft.Extensions.Terminal.csproj -c Release -o ./nupkg
+
+      - name: Push to GitHub Packages
+        run: dotnet nuget push ./nupkg/*.nupkg --source "https://nuget.pkg.github.com/richlander/index.json" --api-key ${{ secrets.GITHUB_TOKEN }}
